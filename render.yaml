@@ -1,0 +1,20 @@
+# Render Blueprint alternative to Fly.io.
+# Deploy: connect the repo in Render -> New -> Blueprint -> select this file.
+# Then set the secret environment variables in the dashboard (never in git).
+services:
+  - type: web
+    name: brainrush-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Single instance: two Telegram pollers would double-answer users.
+    numInstances: 1
+    healthCheckPath: /health
+    envVars:
+      - key: API_HOST
+        value: 0.0.0.0
+      - key: PYTHONUNBUFFERED
+        value: 1
+      # PORT is injected by Render and picked up automatically (see config).
+      # Set these in the Render dashboard as secrets/plaintext:
+      #   BOT_TOKEN, DATABASE_URL, WEBAPP_URL, API_CORS_ORIGINS
+      # Leave ALLOW_DEV_AUTH unset (default false).

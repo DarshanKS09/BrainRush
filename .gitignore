@@ -1,0 +1,46 @@
+# Environment
+.env
+.env.*
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache / build
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.log
+junit.xml
+test-results/
+coverage/
+
+# Frontend
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+.vite/
+
+# Alembic / DB local artifacts
+*.db
+*.sqlite3
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

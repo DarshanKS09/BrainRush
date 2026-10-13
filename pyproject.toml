@@ -1,0 +1,40 @@
+[project]
+name = "brainrush"
+version = "0.1.0"
+description = "BrainRush Telegram gaming bot foundation (aiogram 3.x + SQLAlchemy 2.x async + PostgreSQL)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "BrainRush" }]
+dependencies = [
+  "aiogram>=3.13,<4.0",
+  "SQLAlchemy>=2.0.30,<3.0",
+  "alembic>=1.13,<2.0",
+  "asyncpg>=0.29,<1.0",
+  "pydantic>=2.7,<3.0",
+  "pydantic-settings>=2.3,<3.0",
+  "python-dotenv>=1.0,<2.0",
+  "fastapi>=0.115,<0.117",
+  "uvicorn>=0.34,<0.36",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0,<9.0",
+  "pytest-asyncio>=0.23,<1.0",
+  "httpx>=0.28,<0.29",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.alembic]
+script_location = "alembic"

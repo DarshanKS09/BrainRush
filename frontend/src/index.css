@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background-color: #0a0e1a;
+  overscroll-behavior-y: none;
+}
+
+body {
+  font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Subtle arcade backdrop */
+.app-bg {
+  background:
+    radial-gradient(600px 320px at 85% -60px, rgba(139, 92, 246, 0.22), transparent 70%),
+    radial-gradient(520px 300px at -10% 20%, rgba(34, 211, 238, 0.12), transparent 70%),
+    #0a0e1a;
+}
+
+/* Number keypad buttons */
+.key-btn {
+  transition: transform 0.08s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+.key-btn:active {
+  transform: scale(0.93);
+}
+
+/* Attempt pips */
+.pip {
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Guess history rows animate in */
+.history-row {
+  animation: rise 0.3s ease-out both;
+}
+
+/* Thin scrollbars for history lists */
+.nice-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.nice-scroll::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.4);
+  border-radius: 999px;
+}
