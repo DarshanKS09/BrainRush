@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   difficultyBlurb,
+  difficultyDisplayName,
   difficultyLabel,
+  difficultySub,
   formatDate,
+  gameTitle,
   keypadReducer,
   outcomeLabel,
+  resumeHint,
   xpPercent,
 } from './gameutil';
 
@@ -26,6 +30,23 @@ describe('labels', () => {
     expect(formatDate(null)).toBe('—');
     expect(formatDate('not-a-date')).toBe('—');
     expect(formatDate('2026-10-12T10:00:00+00:00')).not.toBe('—');
+  });
+
+  it('labels color difficulties per game without touching backend ids', () => {
+    expect(difficultyDisplayName('color_sequence', 'medium')).toBe('Normal');
+    expect(difficultyDisplayName('color_sequence', 'easy')).toBe('Easy');
+    expect(difficultyDisplayName('number_guessing', 'medium')).toBe('Medium');
+    expect(difficultySub('color_sequence', { id: 'easy', max_attempts: 8, start_length: 3 }))
+      .toBe('Up to 8 rounds · starts at 3');
+    expect(difficultySub('number_guessing', { id: 'hard', max_attempts: 7 }))
+      .toBe('7 attempts');
+  });
+
+  it('titles games and resume hints per type', () => {
+    expect(gameTitle('color_sequence')).toBe('Color Sequence');
+    expect(gameTitle('number_guessing')).toBe('Number Guessing');
+    expect(resumeHint({ game_type: 'color_sequence', level: 4 })).toBe('Lv 4');
+    expect(resumeHint({ game_type: 'number_guessing', attempts_left: 5 })).toBe('5 left');
   });
 });
 

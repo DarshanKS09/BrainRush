@@ -32,10 +32,14 @@ from brainrush.db.repository import (
     WebappStateRepository,
 )
 from brainrush.game import number_guessing as guessing
+from brainrush.game import color_sequence as colors
 from brainrush.game.progression import level_for_xp
 from brainrush.services import utcnow
 
 GAME_TYPE_NUMBER_GUESSING = "number_guessing"
+GAME_TYPE_COLOR_SEQUENCE = "color_sequence"
+
+PLAYABLE_GAME_TYPES = frozenset({GAME_TYPE_NUMBER_GUESSING, GAME_TYPE_COLOR_SEQUENCE})
 
 DIFFICULTIES: dict[str, guessing.NumberGuessingConfig] = {
     "easy": guessing.NumberGuessingConfig(max_attempts=15),
@@ -52,6 +56,21 @@ CATALOG = [
         "difficulties": [
             {"id": did, "max_attempts": cfg.max_attempts}
             for did, cfg in DIFFICULTIES.items()
+        ],
+    },
+    {
+        "id": "color_sequence",
+        "title": "Color Sequence",
+        "description": "Watch the flashing colors, then repeat the sequence. Survive to the final level.",
+        "playable": True,
+        "difficulties": [
+            {
+                "id": did,
+                "max_attempts": cfg.max_level,
+                "start_length": cfg.start_length,
+                "playback_ms": cfg.playback_ms,
+            }
+            for did, cfg in colors.COLOR_DIFFICULTIES.items()
         ],
     },
     {
@@ -115,8 +134,62 @@ def _public_view(state, guesses: list[dict]) -> dict:
     }
 
 
+def _color_public_view(state, data: dict) -> dict:
+    """Public Color Sequence state: only the prefix the player must repeat.
+
+    Future colors do not exist yet server-side (appended per completed
+    level), so nothing beyond the current prefix can leak.
+    """
+    level = data["level"]
+    return {
+        "session_id": str(state.session_id),
+        "game_type": state.game_type,
+        "difficulty": state.difficulty,
+        "max_attempts": state.max_attempts,
+        "display": list(data["sequence"][:level]),
+        "position": data["position"],
+        "level": level,
+        "max_level": state.max_attempts,
+        "levels_completed": data["levels_completed"],
+        "moves": list(data["log"]),
+        "status": "started",
+        "finished": False,
+        "result": None,
+    }
+
+
+def _new_color_data(config: colors.ColorSequenceConfig, rng=None) -> dict:
+    return {
+        "sequence": colors.new_sequence(config.start_length, rng),
+        "position": 0,
+        "level": config.start_length,
+        "levels_completed": 0,
+        "log": [],
+    }
+
+
+def _active_view(state) -> dict:
+    """Public view for a resumed game, dispatched by game type."""
+    if state.game_type == GAME_TYPE_COLOR_SEQUENCE:
+        return _color_public_view(state, dict(state.guesses or {}))
+    return _public_view(state, list(state.guesses or []))
+
+
 def _completed_view(session_row: GameSession, result_row, guesses: list[dict]) -> dict:
     meta = dict(result_row.result_metadata or {})
+    if meta.get("game") == GAME_TYPE_COLOR_SEQUENCE:
+        rendered = [
+            {"value": g["value"], "hint": "hit" if g.get("hit") else "miss"}
+            for g in guesses
+            if isinstance(g, dict)
+        ]
+    else:
+        rendered = [
+            {"value": g["value"] if isinstance(g, dict) else g,
+             "hint": _hint(g["value"] if isinstance(g, dict) else g,
+                           meta.get("secret", 0))}
+            for g in guesses
+        ]
     return {
         "session_id": str(session_row.id),
         "game_type": meta.get("game", GAME_TYPE_NUMBER_GUESSING),
@@ -124,12 +197,7 @@ def _completed_view(session_row: GameSession, result_row, guesses: list[dict]) -
         "max_attempts": meta.get("max_attempts"),
         "attempts_used": meta.get("attempts", session_row.score),
         "attempts_left": 0,
-        "guesses": [
-            {"value": g["value"] if isinstance(g, dict) else g,
-             "hint": _hint(g["value"] if isinstance(g, dict) else g,
-                           meta.get("secret", 0))}
-            for g in guesses
-        ],
+        "guesses": rendered,
         "status": session_row.status,
         "finished": True,
         "result": {
@@ -152,10 +220,19 @@ class MiniappGameService:
         self.states = WebappStateRepository(session)
 
     async def start_game(
-        self, *, user_id: uuid.UUID, difficulty: str = "hard"
+        self, *, user_id: uuid.UUID, difficulty: str = "hard",
+        game_type: str = GAME_TYPE_NUMBER_GUESSING,
     ) -> dict:
         """Abandon leftover webapp games, then start fresh. Returns public view."""
-        config = _config_for(difficulty)
+        if game_type not in PLAYABLE_GAME_TYPES:
+            raise ValueError(f"game_type must be one of {sorted(PLAYABLE_GAME_TYPES)}")
+        if game_type == GAME_TYPE_COLOR_SEQUENCE:
+            if difficulty not in colors.COLOR_DIFFICULTIES:
+                raise ValueError(
+                    f"difficulty must be one of {sorted(colors.COLOR_DIFFICULTIES)}"
+                )
+        else:
+            _config_for(difficulty)  # fail fast, before any DB work
         async with self.session.begin():
             if await self.users.get_by_id(user_id) is None:
                 raise NotFoundError("user not found")
@@ -163,8 +240,13 @@ class MiniappGameService:
                 await self.sessions.abandon(session_id=state.session_id, ended_at=utcnow())
                 await self.states.delete(state)
             db_row = await self.sessions.create(
-                user_id=user_id, game_type=GAME_TYPE_NUMBER_GUESSING
+                user_id=user_id, game_type=game_type
             )
+            if game_type == GAME_TYPE_COLOR_SEQUENCE:
+                return await self._start_color(
+                    user_id=user_id, db_row=db_row, difficulty=difficulty
+                )
+            config = _config_for(difficulty)
             secret = guessing.roll_secret(config)
             state = await self.states.create(
                 user_id=user_id,
@@ -175,6 +257,28 @@ class MiniappGameService:
                 max_attempts=config.max_attempts,
             )
             return _public_view(state, [])
+
+    async def _start_color(self, *, user_id, db_row, difficulty: str) -> dict:
+        try:
+            config = colors.COLOR_DIFFICULTIES[difficulty]
+        except KeyError:
+            raise ValueError(
+                f"difficulty must be one of {sorted(colors.COLOR_DIFFICULTIES)}"
+            ) from None
+        # No single secret exists for a memory game; the column is NOT NULL
+        # so it stores 0 (unused) while the real state lives in `guesses`.
+        state = await self.states.create(
+            user_id=user_id,
+            session_id=db_row.id,
+            game_type=GAME_TYPE_COLOR_SEQUENCE,
+            difficulty=difficulty,
+            secret=0,
+            max_attempts=config.max_level,
+        )
+        data = _new_color_data(config)
+        state.guesses = data
+        await self.session.flush()
+        return _color_public_view(state, data)
 
     async def guess(
         self,
@@ -193,6 +297,8 @@ class MiniappGameService:
                 # Either finished (state deleted) or foreign: replay stored
                 # result when owned+completed, else 404 without leaking.
                 return await self._replay_or_missing(session_id, user_id)
+            if state.game_type != GAME_TYPE_NUMBER_GUESSING:
+                raise ValueError("this game uses the move endpoint, not guesses")
             config = _config_for(state.difficulty)
             try:
                 guessing.parse_guess(str(value), config)
@@ -262,6 +368,125 @@ class MiniappGameService:
             session_row, result_row, [*guesses, {"id": client_guess_id, "value": value}]
         )
 
+    async def tap(
+        self,
+        *,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID,
+        color: int,
+        client_move_id: str,
+    ) -> dict:
+        """Submit one Color Sequence tap. Idempotent per client_move_id.
+
+        Correct taps advance within the level; completing a level appends a
+        new color (generated server-side, so future colors never leak). A
+        wrong tap ends the run immediately.
+        """
+        if not isinstance(client_move_id, str) or not client_move_id.strip():
+            raise ValueError("client_move_id must be a non-empty string")
+        try:
+            color = colors.parse_tap(color)
+        except colors.InvalidTapError as exc:
+            raise ValueError(str(exc)) from None
+        async with self.session.begin():
+            state = await self.states.get_for_update(session_id=session_id)
+            if state is None or state.user_id != user_id:
+                return await self._replay_or_missing(session_id, user_id)
+            if state.game_type != GAME_TYPE_COLOR_SEQUENCE:
+                raise ValueError("this game uses the guess endpoint, not moves")
+            try:
+                config = colors.COLOR_DIFFICULTIES[state.difficulty]
+            except KeyError:
+                raise ValueError("stored difficulty is invalid") from None
+            data = dict(state.guesses or {})
+            sequence = list(data.get("sequence", []))
+            position = int(data.get("position", 0))
+            level = int(data.get("level", config.start_length))
+            completed = int(data.get("levels_completed", 0))
+            log = list(data.get("log", []))
+            if any(entry.get("id") == client_move_id for entry in log):
+                return _color_public_view(state, data)
+            hit = (
+                0 <= position < len(sequence) and sequence[position] == color
+            )
+            entry = {"id": client_move_id, "value": color, "hit": bool(hit)}
+            if not hit:
+                return await self._complete_color(
+                    state, data, entry, completed_levels=completed,
+                    won=False, config=config,
+                )
+            position += 1
+            if position < level:
+                data.update({"position": position, "log": [*log, entry]})
+                state.guesses = data
+                await self.session.flush()
+                return _color_public_view(state, data)
+            # Level complete: score it, then grow or win.
+            completed += 1
+            if level >= config.max_level:
+                return await self._complete_color(
+                    state, data, entry, completed_levels=completed,
+                    won=True, config=config,
+                )
+            sequence = [*sequence, colors.roll_color()]
+            data.update({
+                "sequence": sequence,
+                "position": 0,
+                "level": level + 1,
+                "levels_completed": completed,
+                "log": [*log, entry],
+            })
+            state.guesses = data
+            await self.session.flush()
+            return _color_public_view(state, data)
+
+    async def _complete_color(
+        self, state, data, entry, *, completed_levels: int, won: bool, config,
+    ):
+        from brainrush.services import utcnow as _utcnow
+
+        moment = _utcnow()
+        xp = colors.xp_for_color_result(
+            levels_completed=completed_levels, won=won, config=config
+        )
+        log = [*data.get("log", []), entry]
+        metadata = {
+            "game": GAME_TYPE_COLOR_SEQUENCE,
+            "difficulty": state.difficulty,
+            "max_level": config.max_level,
+            "start_length": config.start_length,
+            "levels_completed": completed_levels,
+            "guesses": log,
+        }
+        session_row = await self.sessions.finish(
+            session_id=state.session_id,
+            status="completed",
+            score=completed_levels,
+            ended_at=moment,
+            duration_seconds=None,
+        )
+        result_row = await self.results.record(
+            session_id=state.session_id,
+            score=completed_levels,
+            outcome="win" if won else "loss",
+            xp_earned=xp,
+            metadata=metadata,
+        )
+        profile = await self.profiles.record_game(
+            user_id=state.user_id,
+            xp_earned=xp,
+            won=won,
+            new_level=None,
+        )
+        await self.profiles.set_level(
+            user_id=state.user_id, level=level_for_xp(profile.total_xp)
+        )
+        await self.activities.add_play(
+            user_id=state.user_id, day=moment.date(), xp_earned=xp
+        )
+        await self.states.delete(state)
+        return _completed_view(session_row, result_row, log)
+
     async def _replay_or_missing(self, session_id, user_id) -> dict:
         session_row = await self.sessions.get_by_id(session_id)
         if session_row is None or session_row.user_id != user_id:
@@ -272,10 +497,16 @@ class MiniappGameService:
         if result_row is None:  # pragma: no cover - defensive
             raise NotFoundError("game result not found")
         meta = dict(result_row.result_metadata or {})
-        stored = [
-            {"id": f"past-{i}", "value": v}
-            for i, v in enumerate(meta.get("guesses", []))
-        ]
+        if meta.get("game") == GAME_TYPE_COLOR_SEQUENCE:
+            stored = [
+                g for g in meta.get("guesses", [])
+                if isinstance(g, dict) and "value" in g
+            ]
+        else:
+            stored = [
+                {"id": f"past-{i}", "value": v}
+                for i, v in enumerate(meta.get("guesses", []))
+            ]
         return _completed_view(session_row, result_row, stored)
 
     async def get_state(self, *, session_id: uuid.UUID, user_id: uuid.UUID) -> dict:
@@ -284,6 +515,8 @@ class MiniappGameService:
             if state is not None:
                 if state.user_id != user_id:
                     raise NotFoundError("game session not found")
+                if state.game_type == GAME_TYPE_COLOR_SEQUENCE:
+                    return _color_public_view(state, dict(state.guesses or {}))
                 return _public_view(state, list(state.guesses or []))
             return await self._replay_or_missing(session_id, user_id)
 
@@ -322,7 +555,12 @@ class MiniappGameService:
             today = await self.activities.get(
                 user_id=user_id, day=utc_today()
             )
-            best = await self.results.best_win_score(user_id=user_id)
+            best = await self.results.best_win_score(
+                user_id=user_id, game_type=GAME_TYPE_NUMBER_GUESSING
+            )
+            best_color = await self.results.best_score_for_game(
+                user_id=user_id, game_type=GAME_TYPE_COLOR_SEQUENCE
+            )
             rank = await self.profiles.rank_by_xp(total_xp=profile.total_xp)
             actives = await self.states.list_active_by_user(user_id=user_id)
             progress = progress_for_xp(profile.total_xp)
@@ -348,10 +586,10 @@ class MiniappGameService:
                     "xp_earned": today.xp_earned if today else 0,
                 },
                 "best_win_attempts": best,
+                "best_color_level": best_color,
                 "rank": rank,
                 "active_games": [
-                    _public_view(state, list(state.guesses or []))
-                    for state, _ in actives
+                    _active_view(state) for state, _ in actives
                 ],
             }
 

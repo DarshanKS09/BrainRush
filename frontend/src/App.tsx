@@ -4,12 +4,13 @@ import { BottomNav, type Tab } from './components/BottomNav';
 import { HomeScreen } from './screens/Home';
 import { GamesScreen } from './screens/Games';
 import { PlayScreen } from './screens/Play';
+import { ColorPlayScreen } from './screens/ColorPlay';
 import { LeaderboardScreen } from './screens/Leaderboard';
 import { ProfileScreen } from './screens/Profile';
 
 type Route =
   | { name: Exclude<Tab, 'play'> }
-  | { name: 'play'; sessionId: string };
+  | { name: 'play'; sessionId: string; gameId: string };
 
 export default function App() {
   const ctx: WebAppContext = useMemo(() => initWebApp(), []);
@@ -57,18 +58,26 @@ export default function App() {
           <HomeScreen
             ctx={ctx}
             onPlayNow={() => setRoute({ name: 'games' })}
-            onResume={(sessionId) => setRoute({ name: 'play', sessionId })}
+            onResume={(gameId, sessionId) => setRoute({ name: 'play', gameId, sessionId })}
           />
         )}
         {route.name === 'games' && (
-          <GamesScreen ctx={ctx} onStart={(sessionId) => setRoute({ name: 'play', sessionId })} />
+          <GamesScreen ctx={ctx} onStart={(gameId, sessionId) => setRoute({ name: 'play', gameId, sessionId })} />
         )}
-        {route.name === 'play' && (
+        {route.name === 'play' && route.gameId === 'color_sequence' && (
+          <ColorPlayScreen
+            ctx={ctx}
+            sessionId={route.sessionId}
+            onExit={() => setRoute({ name: 'games' })}
+            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'color_sequence', sessionId })}
+          />
+        )}
+        {route.name === 'play' && route.gameId !== 'color_sequence' && (
           <PlayScreen
             ctx={ctx}
             sessionId={route.sessionId}
             onExit={() => setRoute({ name: 'games' })}
-            onReplay={(sessionId) => setRoute({ name: 'play', sessionId })}
+            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'number_guessing', sessionId })}
           />
         )}
         {route.name === 'leaderboard' && <LeaderboardScreen ctx={ctx} />}

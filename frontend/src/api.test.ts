@@ -1,6 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { ApiError, api, buildUrl, newClientGuessId } from './api';
-
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -45,5 +44,26 @@ describe('api client', () => {
 
   it('generates unique client guess ids', () => {
     expect(newClientGuessId()).not.toBe(newClientGuessId());
+  });
+
+  it('starts any playable game by id', async () => {
+    const fetch = mockFetch(200, { session_id: 's1' });
+    await api.start('data', 'color_sequence', 'easy');
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(url.endsWith('/api/sessions')).toBe(true);
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      game_type: 'color_sequence',
+      difficulty: 'easy',
+    });
+  });
+
+  it('posts color moves with client id', async () => {
+    const fetch = mockFetch(200, { finished: false });
+    await api.move('data', 'sid-1', 2, 'm-7');
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(url.endsWith('/api/sessions/sid-1/move')).toBe(true);
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({ color: 2, client_move_id: 'm-7' });
   });
 });

@@ -9,6 +9,23 @@ export function difficultyLabel(id: string): string {
   return id.charAt(0).toUpperCase() + id.slice(1);
 }
 
+/** Frontend display name per game (backend ids stay easy/medium/hard). */
+export function difficultyDisplayName(gameId: string, id: string): string {
+  if (gameId === 'color_sequence' && id === 'medium') return 'Normal';
+  return difficultyLabel(id);
+}
+
+/** One-line difficulty summary, per game (attempts vs rounds). */
+export function difficultySub(
+  gameId: string,
+  d: { id: string; max_attempts: number; start_length?: number },
+): string {
+  if (gameId === 'color_sequence') {
+    return `Up to ${d.max_attempts} rounds · starts at ${d.start_length ?? '?'}`;
+  }
+  return difficultyBlurb(d.max_attempts);
+}
+
 export function difficultyBlurb(maxAttempts: number): string {
   return `${maxAttempts} attempts`;
 }
@@ -37,4 +54,21 @@ export function keypadReducer(buffer: string, key: string): string {
   const n = Number(next);
   if (n > 100) return buffer;
   return String(n);
+}
+
+/** Short per-game title for resume rows and history. */
+export function gameTitle(gameType: string): string {
+  if (gameType === 'color_sequence') return 'Color Sequence';
+  if (gameType === 'number_guessing') return 'Number Guessing';
+  return gameType;
+}
+
+/** Right-hand resume hint; shape differs per game type. */
+export function resumeHint(game: {
+  game_type: string;
+  attempts_left?: number;
+  level?: number;
+}): string {
+  if (game.game_type === 'color_sequence') return `Lv ${game.level ?? '?'}`;
+  return `${game.attempts_left ?? '?'} left`;
 }

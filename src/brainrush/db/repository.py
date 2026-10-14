@@ -401,12 +401,40 @@ class GameResultRepository(BaseRepository[GameResult]):
         )
         return result.scalar_one_or_none()
 
-    async def best_win_score(self, *, user_id: uuid.UUID) -> int | None:
-        """Fewest attempts in any won game (personal best), or None."""
-        result = await self.session.execute(
+    async def best_win_score(
+        self, *, user_id: uuid.UUID, game_type: str | None = None
+    ) -> int | None:
+        """Fewest attempts in any won game (personal best), or None.
+
+        Pass game_type to scope the best to one game; None keeps the legacy
+        cross-game behavior.
+        """
+        stmt = (
             select(func.min(GameResult.score))
             .join(GameSession, GameSession.id == GameResult.session_id)
             .where(GameSession.user_id == user_id, GameResult.outcome == "win")
+        )
+        if game_type is not None:
+            stmt = stmt.where(GameSession.game_type == game_type)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def best_score_for_game(
+        self, *, user_id: uuid.UUID, game_type: str
+    ) -> int | None:
+        """Highest score in any completed game of one type (personal best).
+
+        Used by games where higher is better (e.g. Color Sequence levels).
+        Abandoned sessions have no result row and never count.
+        """
+        result = await self.session.execute(
+            select(func.max(GameResult.score))
+            .join(GameSession, GameSession.id == GameResult.session_id)
+            .where(
+                GameSession.user_id == user_id,
+                GameSession.game_type == game_type,
+                GameSession.status == "completed",
+            )
         )
         return result.scalar_one_or_none()
 

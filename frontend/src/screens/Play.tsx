@@ -169,7 +169,7 @@ function ReplayButton({ ctx, onReplay }: { ctx: WebAppContext; onReplay: (id: st
         setBusy(true);
         try {
           // Replay keeps it simple: medium difficulty rematch.
-          const s = await api.start(ctx.initData, 'medium');
+          const s = await api.start(ctx.initData, 'number_guessing', 'medium');
           onReplay(s.session_id);
         } finally {
           setBusy(false);

@@ -17,13 +17,18 @@ export interface DashboardData {
   profile: ProfileData;
   today: { games_played: number; xp_earned: number };
   best_win_attempts: number | null;
+  best_color_level: number | null;
   rank: number;
-  active_games: GameState[];
+  active_games: ActiveGame[];
 }
+
+export type ActiveGame = GameState | ColorState;
 
 export interface DifficultyInfo {
   id: string;
   max_attempts: number;
+  start_length?: number;
+  playback_ms?: number;
 }
 
 export interface GameInfo {
@@ -58,6 +63,34 @@ export interface GameState {
   status: string;
   finished: boolean;
   result: GameResult | null;
+}
+
+export interface ColorMove {
+  value: number;
+  hit: boolean;
+}
+
+export interface ColorResult {
+  outcome: 'win' | 'loss';
+  score: number;
+  xp_earned: number;
+  secret: number | null;
+}
+
+export interface ColorState {
+  session_id: string;
+  game_type: string;
+  difficulty: string;
+  max_attempts: number;
+  display: number[];
+  position: number;
+  level: number;
+  max_level: number;
+  levels_completed: number;
+  moves: ColorMove[];
+  status: string;
+  finished: boolean;
+  result: ColorResult | null;
 }
 
 export interface HistoryItem {
@@ -122,17 +155,24 @@ async function request<T>(path: string, initData: string, init?: RequestInit): P
 export const api = {
   me: (initData: string) => request<DashboardData>('/api/me', initData),
   games: (initData: string) => request<{ games: GameInfo[] }>('/api/games', initData),
-  start: (initData: string, difficulty: string) =>
-    request<GameState>('/api/sessions', initData, {
+  start: (initData: string, gameId: string, difficulty: string) =>
+    request<GameState | ColorState>('/api/sessions', initData, {
       method: 'POST',
-      body: JSON.stringify({ game_type: 'number_guessing', difficulty }),
+      body: JSON.stringify({ game_type: gameId, difficulty }),
     }),
   state: (initData: string, sessionId: string) =>
     request<GameState>(`/api/sessions/${sessionId}`, initData),
+  colorState: (initData: string, sessionId: string) =>
+    request<ColorState>(`/api/sessions/${sessionId}`, initData),
   guess: (initData: string, sessionId: string, value: number, clientGuessId: string) =>
     request<GameState>(`/api/sessions/${sessionId}/guess`, initData, {
       method: 'POST',
       body: JSON.stringify({ value, client_guess_id: clientGuessId }),
+    }),
+  move: (initData: string, sessionId: string, color: number, clientMoveId: string) =>
+    request<ColorState>(`/api/sessions/${sessionId}/move`, initData, {
+      method: 'POST',
+      body: JSON.stringify({ color, client_move_id: clientMoveId }),
     }),
   cancel: (initData: string, sessionId: string) =>
     request<{ session_id: string; status: string }>(`/api/sessions/${sessionId}`, initData, {

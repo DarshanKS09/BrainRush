@@ -216,7 +216,8 @@ async def test_dashboard_shape_uses_real_numbers():
             user,  # users.get_by_id
             FakeResult(rows=[profile]),  # profiles.get_by_user_id
             FakeResult(rows=[]),  # activities.get (none today)
-            FakeResult(rows=[3]),  # best_win_score
+            FakeResult(rows=[3]),  # best_win_score (number guessing)
+            FakeResult(rows=[]),  # best color level (none yet)
             FakeResult(rows=[2]),  # rank count -> rank 3
             FakeResult(rows=[]),  # active states
         ]
@@ -230,5 +231,6 @@ async def test_dashboard_shape_uses_real_numbers():
     assert dash["profile"]["xp_into_level"] == 50
     assert dash["today"] == {"games_played": 0, "xp_earned": 0}
     assert dash["best_win_attempts"] == 3
+    assert dash["best_color_level"] is None
     assert dash["rank"] == 3
     assert dash["active_games"] == []

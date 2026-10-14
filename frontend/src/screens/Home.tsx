@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type DashboardData, type HistoryItem } from '../api';
-import { formatDate, outcomeLabel } from '../gameutil';
+import { formatDate, gameTitle, outcomeLabel, resumeHint } from '../gameutil';
 import type { WebAppContext } from '../telegram';
 import { ErrorNotice, Loading, SectionTitle, StatTile, XpBar } from '../components/ui';
 
@@ -11,7 +11,7 @@ export function HomeScreen({
 }: {
   ctx: WebAppContext;
   onPlayNow: () => void;
-  onResume: (sessionId: string) => void;
+  onResume: (gameId: string, sessionId: string) => void;
 }) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -80,11 +80,11 @@ export function HomeScreen({
           {data.active_games.map((g) => (
             <button
               key={g.session_id}
-              onClick={() => onResume(g.session_id)}
+              onClick={() => onResume(g.game_type, g.session_id)}
               className="mt-1 flex w-full items-center justify-between rounded-xl bg-panel px-3 py-2.5 text-sm font-semibold text-white active:scale-[0.99]"
             >
-              <span>🔢 Number Guessing · {g.difficulty}</span>
-              <span className="text-neon-cyan">{g.attempts_left} left →</span>
+              <span>{g.game_type === 'color_sequence' ? '🎨' : '🔢'} {gameTitle(g.game_type)} · {g.difficulty}</span>
+              <span className="text-neon-cyan">{resumeHint(g)} →</span>
             </button>
           ))}
         </div>
@@ -105,7 +105,7 @@ export function HomeScreen({
                   {outcomeLabel(h.outcome)}
                 </span>
                 <span className="text-slate-400">
-                  {h.score} tries · +{h.xp_earned} XP · {formatDate(h.started_at)}
+                  {h.game_type === 'color_sequence' ? `Lv ${h.score}` : `${h.score} tries`} · +{h.xp_earned} XP · {formatDate(h.started_at)}
                 </span>
               </li>
             ))}
@@ -114,6 +114,11 @@ export function HomeScreen({
         {data.best_win_attempts !== null && (
           <p className="mt-2 text-center text-xs text-slate-400">
             ⭐ Personal best: won in {data.best_win_attempts} {data.best_win_attempts === 1 ? 'try' : 'tries'}
+          </p>
+        )}
+        {data.best_color_level !== null && data.best_color_level !== undefined && (
+          <p className="mt-1 text-center text-xs text-slate-400">
+            🎨 Color best: reached level {data.best_color_level}
           </p>
         )}
       </div>

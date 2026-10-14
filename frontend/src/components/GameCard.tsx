@@ -1,8 +1,9 @@
 import type { GameInfo } from '../api';
-import { difficultyBlurb, difficultyLabel } from '../gameutil';
+import { difficultyDisplayName, difficultySub } from '../gameutil';
 
 const ART: Record<string, { icon: string; gradient: string }> = {
   number_guessing: { icon: '🔢', gradient: 'from-violet-600 to-cyan-500' },
+  color_sequence: { icon: '🎨', gradient: 'from-pink-500 to-amber-400' },
   memory_match: { icon: '🃏', gradient: 'from-fuchsia-600 to-purple-500' },
   reaction_test: { icon: '⚡', gradient: 'from-amber-500 to-rose-500' },
   math_challenge: { icon: '➗', gradient: 'from-emerald-500 to-cyan-500' },
@@ -42,7 +43,7 @@ export function GameCard({
           <div className="mt-2 flex flex-wrap gap-1.5">
             {game.difficulties.map((d) => (
               <span key={d.id} className="rounded-lg bg-navy px-2 py-1 text-[11px] text-slate-300">
-                {difficultyLabel(d.id)} · {difficultyBlurb(d.max_attempts)}
+                {difficultyDisplayName(game.id, d.id)} · {difficultySub(game.id, d)}
               </span>
             ))}
           </div>

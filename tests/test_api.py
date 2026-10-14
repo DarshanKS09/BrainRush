@@ -23,6 +23,7 @@ class StubService:
     """Stands in for MiniappGameService; handlers construct per request."""
 
     instance = None
+    all_calls: list = []
 
     def __init__(self, session):
         self.calls = []
@@ -43,8 +44,9 @@ class StubService:
         self._raise()
         return self.dashboard_data
 
-    async def start_game(self, *, user_id, difficulty="hard"):
-        self.calls.append(("start", user_id, difficulty))
+    async def start_game(self, *, user_id, difficulty="hard", game_type="number_guessing"):
+        self.calls.append(("start", user_id, difficulty, game_type))
+        StubService.all_calls.append(("start", user_id, difficulty, game_type))
         self._raise()
         return self.state_data
 
@@ -55,6 +57,12 @@ class StubService:
 
     async def guess(self, *, session_id, user_id, value, client_guess_id):
         self.calls.append(("guess", session_id, user_id, value, client_guess_id))
+        self._raise()
+        return self.finish_data
+
+    async def tap(self, *, session_id, user_id, color, client_move_id):
+        self.calls.append(("tap", session_id, user_id, color, client_move_id))
+        StubService.all_calls.append(("tap", session_id, user_id, color, client_move_id))
         self._raise()
         return self.finish_data
 
@@ -235,3 +243,42 @@ def test_service_errors_map_to_status_codes(monkeypatch):
     monkeypatch.setattr(StubService, "__init__", value_init)
     assert client.post("/api/sessions", headers=headers,
                        json={"difficulty": "extreme"}).status_code == 422
+
+
+def test_color_lifecycle_routes_and_validation(monkeypatch):
+    StubService.all_calls.clear()
+    client = _client(monkeypatch)
+    headers = {"X-Telegram-Init-Data": "x"}
+
+    started = client.post("/api/sessions", headers=headers,
+                          json={"game_type": "color_sequence",
+                                "difficulty": "easy"})
+    assert started.status_code == 200
+    assert _no_secret(started.json())
+
+    tapped = client.post(f"/api/sessions/{SID}/move", headers=headers,
+                         json={"color": 2, "client_move_id": "m1"})
+    assert tapped.status_code == 200
+
+    assert StubService.all_calls[0][0] == "start"
+    assert StubService.all_calls[0][3] == "color_sequence"
+    assert StubService.all_calls[1][:4] == ("tap", SID, UID, 2)
+
+    bad_color = client.post(f"/api/sessions/{SID}/move", headers=headers,
+                            json={"color": 9, "client_move_id": "m2"})
+    assert bad_color.status_code == 422
+
+    bad_id = client.post(f"/api/sessions/{SID}/move", headers=headers,
+                         json={"color": 1, "client_move_id": ""})
+    assert bad_id.status_code == 422
+
+
+def test_color_catalog_lists_difficulties(monkeypatch):
+    client = _client(monkeypatch)
+    body = client.get("/api/games",
+                      headers={"X-Telegram-Init-Data": "x"}).json()
+    by_id = {g["id"]: g for g in body["games"]}
+    color = by_id["color_sequence"]
+    assert color["playable"] is True
+    assert {d["id"] for d in color["difficulties"]} == {"easy", "medium", "hard"}
+    assert color["xp_rules"]["hard"]["win"] == 12 * 10 + 80
