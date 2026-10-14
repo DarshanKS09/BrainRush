@@ -57,6 +57,10 @@ export function ColorPlayScreen({
   const [replaying, setReplaying] = useState(false);
   const [started, setStarted] = useState(false);
   const [transitionMs, setTransitionMs] = useState<number | null>(null);
+  // Taps accepted but not yet confirmed by the server. Added to the
+  // displayed progress immediately (optimistic); the server view remains
+  // authoritative and every terminal/error path resets this to 0.
+  const [pending, setPending] = useState(0);
   const viewRef = useRef<ColorState | null>(null);
   viewRef.current = view;
   const playedLevel = useRef<string>('');
@@ -149,7 +153,7 @@ export function ColorPlayScreen({
     try {
       while (queueRef.current.length > 0) {
         const current = viewRef.current;
-        if (!current || current.finished) { queueRef.current = []; break; }
+        if (!current || current.finished) { queueRef.current = []; setPending(0); break; }
         if (current.session_id !== sessionId) break; // stale session (replay)
         if (!mountedRef.current) break;
         const head = queueRef.current[0];
@@ -160,6 +164,7 @@ export function ColorPlayScreen({
           // Drop buffered taps (their fate is unknown) and resync from the
           // server, which remains the single source of truth for position.
           queueRef.current = [];
+          setPending(0);
           setNotice(e instanceof Error ? e.message : 'Tap failed. Try again.');
           try {
             if (mountedRef.current) setView(await api.colorState(ctx.initData, sessionId));
@@ -170,14 +175,17 @@ export function ColorPlayScreen({
         }
         if (!mountedRef.current) break;
         queueRef.current.shift();
+        setPending((p) => Math.max(0, p - 1));
         setView(next);
         if (next.finished) {
           queueRef.current = [];
+          setPending(0);
           haptic(next.result?.outcome === 'win' ? 'success' : 'error');
         } else if (next.levels_completed > current.levels_completed) {
           // Round cleared: discard taps made before the player could see
           // the new level, then pause for the transition.
           queueRef.current = [];
+          setPending(0);
           setTransitionMs(ROUND_TRANSITION_MS);
         }
       }
@@ -197,6 +205,7 @@ export function ColorPlayScreen({
       if (tapFlashTimer.current) clearTimeout(tapFlashTimer.current);
       tapFlashTimer.current = setTimeout(() => setFlash(null), 180);
       queueRef.current.push({ color, id: newClientGuessId() });
+      setPending((p) => p + 1);
       void pump();
     },
     [showing, started, transitionMs, pump],
@@ -361,7 +370,7 @@ export function ColorPlayScreen({
           <p className="text-xs uppercase tracking-widest text-slate-400" aria-live="polite">
             {showing
               ? '👀 Watch carefully…'
-              : `Your turn — tap ${view.position + 1} of ${view.level}`}
+              : `Your turn — tap ${Math.min(view.position + pending + 1, view.level)} of ${view.level}`}
           </p>
         )}
         <div className="mt-2 flex justify-center gap-1.5" aria-label={`Level progress ${view.levels_completed} completed`}>

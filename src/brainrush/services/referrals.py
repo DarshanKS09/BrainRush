@@ -66,16 +66,24 @@ class ReferralService:
     async def build_link(
         self, *, user_id: uuid.UUID, bot_username: str, app_short_name: str
     ) -> dict:
-        """Personal deep link, or link=None when the bot/app names are not
-        configured (the code itself is still returned)."""
+        """Personal deep link, or link=None when the bot name is not
+        configured (the code itself is still returned).
+
+        Format follows the app configuration actually present:
+          - named Direct Mini App (bot + short name from BotFather):
+            https://t.me/<bot>/<app>?startapp=<code>
+          - Main Mini App (bot username only, no short name):
+            https://t.me/<bot>?startapp=<code>
+        """
         data = await self.get_or_create_code(user_id=user_id)
         code = data["code"]
+        bot = bot_username.strip()
+        app = app_short_name.strip()
         link = None
-        if bot_username.strip() and app_short_name.strip():
-            link = (
-                f"https://t.me/{bot_username.strip()}/{app_short_name.strip()}"
-                f"?startapp={code}"
-            )
+        if bot and app:
+            link = f"https://t.me/{bot}/{app}?startapp={code}"
+        elif bot:
+            link = f"https://t.me/{bot}?startapp={code}"
         return {"code": code, "link": link}
 
     async def claim(

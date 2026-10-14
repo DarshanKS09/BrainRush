@@ -18,12 +18,16 @@ export function difficultyDisplayName(gameId: string, id: string): string {
 /** One-line difficulty summary, per game (attempts vs rounds). */
 export function difficultySub(
   gameId: string,
-  d: { id: string; max_attempts: number; start_length?: number },
+  d: { id: string; max_attempts: number; start_length?: number; wait_min_ms?: number; wait_max_ms?: number },
 ): string {
   if (gameId === 'color_sequence') {
     return `Up to ${d.max_attempts} rounds · starts at ${d.start_length ?? '?'}`;
   }
   if (gameId === 'reflex_rush') {
+    if (d.wait_min_ms !== undefined && d.wait_max_ms !== undefined) {
+      if (d.wait_min_ms === d.wait_max_ms) return `Fixed ${d.wait_min_ms / 1000} s wait`;
+      return `Waits ${d.wait_min_ms / 1000}–${d.wait_max_ms / 1000} s`;
+    }
     return `5 rounds · tap fast`;
   }
   return difficultyBlurb(d.max_attempts);
@@ -45,6 +49,29 @@ export function outcomeLabel(outcome: string | null): string {
   if (outcome === 'loss') return 'Lost';
   if (outcome === 'draw') return 'Draw';
   return 'In progress';
+}
+
+/** History label driven by session status first: abandoned/expired rows
+ * have no result, so outcome-only labels would wrongly read "In progress". */
+export function sessionStatusLabel(status: string, outcome: string | null): string {
+  if (status === 'abandoned') return 'Abandoned';
+  if (status === 'expired') return 'Expired';
+  if (status === 'completed') return outcomeLabel(outcome);
+  return 'In progress';
+}
+
+/** Exact pre-signal wait description for Reflex Rush difficulties, from the
+ * catalog's published wait window (backend-enforced ranges). */
+export function reflexWaitText(d: { id: string; wait_min_ms?: number; wait_max_ms?: number }): string {
+  const min = d.wait_min_ms;
+  const max = d.wait_max_ms;
+  if (min === undefined || max === undefined) return 'Wait for green, then tap';
+  const secs = (ms: number): string => `${ms / 1000}`;
+  if (min === max) return `Same wait every round: ${secs(min)} s`;
+  if (Number.isInteger(min / 1000) && Number.isInteger(max / 1000)) {
+    return `Wait varies: ${min / 1000}–${max / 1000} s`;
+  }
+  return `Wait varies: ${secs(min)}–${secs(max)} s`;
 }
 
 /** Keypad buffer reducer: digits append (max 3 chars), back clears. */

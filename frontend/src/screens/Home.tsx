@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type DashboardData, type HistoryItem } from '../api';
-import { formatDate, gameTitle, outcomeLabel, resumeHint } from '../gameutil';
+import { formatDate, gameTitle, resumeHint, sessionStatusLabel } from '../gameutil';
 import type { WebAppContext } from '../telegram';
 import { ErrorNotice, Loading, SectionTitle, StatTile, XpBar } from '../components/ui';
 
@@ -101,8 +101,14 @@ export function HomeScreen({
             {history.map((h) => (
               <li key={h.session_id} className="flex items-center justify-between rounded-2xl bg-panel px-3 py-2.5 text-sm shadow-card">
                 <span className="font-semibold text-white">
-                  {h.outcome === 'win' ? '🏆' : h.outcome === 'loss' ? '💪' : '🎮'}{' '}
-                  {outcomeLabel(h.outcome)}
+                  {h.status === 'completed'
+                    ? (h.outcome === 'win' ? '🏆' : h.outcome === 'loss' ? '💪' : '🎮')
+                    : h.status === 'abandoned'
+                      ? '🚫'
+                      : h.status === 'expired'
+                        ? '⌛'
+                        : '🎮'}{' '}
+                  {sessionStatusLabel(h.status, h.outcome)}
                 </span>
                 <span className="text-slate-400">
                   {h.game_type === 'color_sequence' ? `Lv ${h.score}` : h.game_type === 'reflex_rush' ? `${h.score} pts` : `${h.score} tries`} · +{h.xp_earned} XP · {formatDate(h.started_at)}

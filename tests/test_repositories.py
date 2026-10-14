@@ -269,3 +269,27 @@ async def test_daily_add_play_upserts_then_bumps_atomically():
     compiled = [_sql(s) for s in session.statements]
     assert any("uq_daily_activities_user_date" in s for s in compiled)
     assert any("games_played +" in s or "games_played+" in s for s in compiled)
+
+
+async def test_expire_stale_started_transitions_only_old_started():
+    from datetime import datetime, timezone
+
+    repo = GameSessionRepository(RecordingSession(script=[FakeResult(rowcount=2)]))
+    cutoff = datetime(2026, 10, 10, tzinfo=timezone.utc)
+    assert await repo.expire_stale_started(user_id=uuid.uuid4(), before=cutoff) == 2
+    compiled = _sql(repo.session.statements[0])
+    assert "expired" in compiled
+    assert "started" in compiled
+    with pytest.raises(ValueError):
+        await repo.expire_stale_started(user_id=uuid.uuid4(), before="yesterday")
+
+
+async def test_delete_for_expired_sessions_targets_ended_states():
+    from brainrush.db.repository import WebappStateRepository
+
+    session = RecordingSession(script=[FakeResult(rowcount=1)])
+    states = WebappStateRepository(session)
+    assert await states.delete_for_expired_sessions(user_id=uuid.uuid4()) == 1
+    compiled = _sql(session.statements[0])
+    assert "webapp_game_states" in compiled
+    assert "abandoned" in compiled and "expired" in compiled

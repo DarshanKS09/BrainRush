@@ -39,6 +39,9 @@ Local `.env` is not used in production and is never overwritten by deploys.
 | `API_PORT` | `8000` (or omit; provider `PORT` overrides it automatically) |
 | `API_CORS_ORIGINS` | Exactly the frontend origin, e.g. `https://brainrush.pages.dev` (no trailing slash, no wildcards) |
 | `INIT_DATA_MAX_AGE` | Leave default (`86400`) |
+| `REFERRER_XP` / `REFERRED_XP` | Leave defaults (`100` / `25`) unless retuning referral rewards |
+| `TELEGRAM_BOT_USERNAME` | Bot username without `@` (e.g. `PlayBrainRushBot`) — enables referral joining links |
+| `MINIAPP_SHORT_NAME` | Mini App short name from BotFather (only if a named Direct Mini App exists; omit for Main-Mini-App links) |
 | `ALLOW_DEV_AUTH` | **Unset / false. Never enable in production.** |
 | `DEV_AUTH_TELEGRAM_ID` | **Unset in production.** |
 

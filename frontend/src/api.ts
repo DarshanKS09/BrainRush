@@ -30,6 +30,23 @@ export interface DifficultyInfo {
   max_attempts: number;
   start_length?: number;
   playback_ms?: number;
+  wait_min_ms?: number;
+  wait_max_ms?: number;
+}
+
+export interface GameXpRules {
+  win_first_try?: number;
+  win_last_try?: number;
+  loss?: number;
+  win?: number;
+  loss_per_level?: number;
+  win_bonus?: number;
+  xp_perfect?: number;
+  xp_good?: number;
+  xp_slow?: number;
+  win_avg_ms?: number;
+  wait_min_ms?: number;
+  wait_max_ms?: number;
 }
 
 export interface GameInfo {
@@ -38,7 +55,7 @@ export interface GameInfo {
   description: string;
   playable: boolean;
   difficulties: DifficultyInfo[];
-  xp_rules?: Record<string, { win_first_try: number; win_last_try: number; loss: number }>;
+  xp_rules?: Record<string, GameXpRules>;
 }
 
 export interface GuessEntry {
@@ -150,6 +167,23 @@ export interface ReferralStats {
   referral_xp: number;
 }
 
+export interface FriendCode {
+  code: string;
+}
+
+export interface FriendEntry {
+  display_name: string | null;
+  username: string | null;
+  level: number;
+  total_xp: number;
+}
+
+export interface FriendAddResult {
+  added: boolean;
+  already: boolean;
+  friend: FriendEntry;
+}
+
 export interface HistoryItem {
   session_id: string;
   game_type: string;
@@ -187,9 +221,15 @@ export function buildUrl(path: string): string {
   return `${baseUrl()}${path}`;
 }
 
-async function request<T>(path: string, initData: string, init?: RequestInit): Promise<T> {
+async function request<T>(
+  path: string,
+  initData: string,
+  init?: RequestInit,
+  timeoutMs?: number,
+): Promise<T> {
   const response = await fetch(buildUrl(path), {
     ...init,
+    signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : init?.signal ?? null,
     headers: {
       'Content-Type': 'application/json',
       'X-Telegram-Init-Data': initData,
@@ -208,6 +248,8 @@ async function request<T>(path: string, initData: string, init?: RequestInit): P
   }
   return (await response.json()) as T;
 }
+
+export const SUBMIT_TIMEOUT_MS = 25000;
 
 export const api = {
   me: (initData: string) => request<DashboardData>('/api/me', initData),
@@ -235,7 +277,7 @@ export const api = {
     request<ReflexState>(`/api/sessions/${sessionId}/finish`, initData, {
       method: 'POST',
       body: JSON.stringify({ rounds, client_submission_id: clientSubmissionId }),
-    }),
+    }, SUBMIT_TIMEOUT_MS),
   reflexState: (initData: string, sessionId: string) =>
     request<ReflexState>(`/api/sessions/${sessionId}`, initData),
   cancel: (initData: string, sessionId: string) =>
@@ -258,6 +300,15 @@ export const api = {
     }),
   referralStats: (initData: string) =>
     request<ReferralStats>('/api/referrals/stats', initData),
+  friendMine: (initData: string) =>
+    request<FriendCode>('/api/friends/mine', initData),
+  friendsList: (initData: string) =>
+    request<{ friends: FriendEntry[] }>('/api/friends', initData),
+  friendAdd: (initData: string, code: string) =>
+    request<FriendAddResult>('/api/friends/add', initData, {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
 };
 
 export function newClientGuessId(): string {

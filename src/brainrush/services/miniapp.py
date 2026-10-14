@@ -18,6 +18,7 @@ Safety properties:
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +41,11 @@ from brainrush.services import utcnow
 GAME_TYPE_NUMBER_GUESSING = "number_guessing"
 GAME_TYPE_COLOR_SEQUENCE = "color_sequence"
 GAME_TYPE_REFLEX_RUSH = "reflex_rush"
+
+# Sessions left `started` longer than this are dead (app closed, failed
+# submit, lobby exit without cancel): genuinely active games finish in
+# minutes, so a day is conservative. Expired rows keep their history.
+STALE_SESSION_TTL = timedelta(hours=24)
 
 PLAYABLE_GAME_TYPES = frozenset({GAME_TYPE_NUMBER_GUESSING, GAME_TYPE_COLOR_SEQUENCE, GAME_TYPE_REFLEX_RUSH})
 
@@ -274,6 +280,17 @@ class MiniappGameService:
         self.activities = DailyActivityRepository(session)
         self.states = WebappStateRepository(session)
 
+    async def _expire_stale_locked(self, *, user_id: uuid.UUID) -> int:
+        """Expire the user's long-unfinished sessions (no new transaction:
+        callers invoke this inside their own `begin()` block)."""
+        cutoff = utcnow() - STALE_SESSION_TTL
+        expired = await self.sessions.expire_stale_started(
+            user_id=user_id, before=cutoff
+        )
+        if expired:
+            await self.states.delete_for_expired_sessions(user_id=user_id)
+        return expired
+
     async def start_game(
         self, *, user_id: uuid.UUID, difficulty: str = "hard",
         game_type: str = GAME_TYPE_NUMBER_GUESSING,
@@ -294,6 +311,7 @@ class MiniappGameService:
         else:
             _config_for(difficulty)  # fail fast, before any DB work
         async with self.session.begin():
+            await self._expire_stale_locked(user_id=user_id)
             if await self.users.get_by_id(user_id) is None:
                 raise NotFoundError("user not found")
             for state, _ in await self.states.list_active_by_user(user_id=user_id):
@@ -718,6 +736,7 @@ class MiniappGameService:
         from brainrush.services import utc_today
 
         async with self.session.begin():
+            await self._expire_stale_locked(user_id=user_id)
             user = await self.users.get_by_id(user_id)
             if user is None:
                 raise NotFoundError("user not found")
@@ -773,6 +792,7 @@ class MiniappGameService:
         self, *, user_id: uuid.UUID, limit: int = 20, offset: int = 0
     ) -> list[dict]:
         async with self.session.begin():
+            await self._expire_stale_locked(user_id=user_id)
             rows = await self.sessions.history_by_user(
                 user_id=user_id, limit=limit, offset=offset
             )

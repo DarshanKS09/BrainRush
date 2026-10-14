@@ -13,6 +13,7 @@ from brainrush.api.deps import (
     get_verified_telegram_identity,
 )
 from brainrush.config import Settings
+from brainrush.services.friends import FriendService
 from brainrush.services.referrals import ReferralService
 from brainrush.services.miniapp import (
     CATALOG,
@@ -231,8 +232,9 @@ class ClaimRequest(BaseModel):
 async def referral_link(
     request: Request, identity: IdentityDep, session: SessionDep
 ) -> dict:
-    """Stable personal code + deep link (link is null until the bot/app
-    names are configured server-side; the code always works)."""
+    """Stable personal code + deep link (link is null until the bot username
+    is configured server-side; the code always works). Named-app format when
+    MINIAPP_SHORT_NAME is set, Main-Mini-App format otherwise."""
     settings: Settings = request.app.state.settings
     data = await _referrals(session, settings).build_link(
         user_id=identity["user_id"],
@@ -271,3 +273,36 @@ async def referral_stats(
 ) -> dict:
     settings: Settings = request.app.state.settings
     return await _referrals(session, settings).stats(user_id=identity["user_id"])
+
+
+class FriendAddRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=32)
+
+
+def _friends(session) -> FriendService:
+    return FriendService(session)
+
+
+@router.get("/friends/mine")
+async def friend_code(identity: IdentityDep, session: SessionDep) -> dict:
+    """Stable personal friend code. Friendships award no XP and never
+    interact with referral attribution."""
+    return await _friends(session).my_code(user_id=identity["user_id"])
+
+
+@router.get("/friends")
+async def friends_list(identity: IdentityDep, session: SessionDep) -> dict:
+    """Symmetric friends list: public display data only, no Telegram ids."""
+    return {"friends": await _friends(session).list_friends(user_id=identity["user_id"])}
+
+
+@router.post("/friends/add")
+async def friend_add(
+    body: FriendAddRequest, identity: IdentityDep, session: SessionDep
+) -> dict:
+    """Add a friend by code, immediately. Uses the verified identity only —
+    never any id from the body. Idempotent: an existing pair returns
+    added=False instead of duplicating."""
+    return await _friends(session).add_friend(
+        user_id=identity["user_id"], code=body.code
+    )

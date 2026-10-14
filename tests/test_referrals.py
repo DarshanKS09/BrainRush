@@ -164,6 +164,20 @@ async def test_link_built_only_when_configured():
     assert without["link"] is None and without["code"] == with_link["code"]
 
 
+async def test_link_falls_back_to_main_mini_app_format():
+    """Bot username without a short name yields the Main Mini App link
+    (https://t.me/<bot>?startapp=...), so joining still works."""
+    session = RecordingSession()
+    svc = _service(session)
+    user = await _register(svc, 111)
+    main = await svc.build_link(
+        user_id=user.id, bot_username="somebot", app_short_name="")
+    assert main["link"] == "https://t.me/somebot?startapp=" + main["code"]
+    padded = await svc.build_link(
+        user_id=user.id, bot_username="  somebot  ", app_short_name="   ")
+    assert padded["link"] == "https://t.me/somebot?startapp=" + main["code"]
+
+
 # -- attribution ---------------------------------------------------------------
 
 async def test_valid_claim_credits_exact_amounts_once():

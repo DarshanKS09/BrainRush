@@ -56,16 +56,18 @@ class ReflexConfig:
 
 REFLEX_DIFFICULTIES: dict[str, ReflexConfig] = {
     # DB check constraint allows only easy/medium/hard ids; the frontend
-    # labels medium as "Normal".
+    # labels medium as "Normal". Timing contract per mode:
+    # easy = one fixed wait every round (predictable), medium = uniform
+    # wait inside a defined range, hard = uniform wait inside a WIDER range.
     "easy": ReflexConfig(
-        wait_min_ms=1500, wait_max_ms=3500,
+        wait_min_ms=2000, wait_max_ms=2000,
         perfect_ms=200, good_ms=500, max_counted_ms=1200,
         xp_perfect=12, xp_good=8, xp_slow=3,
         win_bonus=15, win_avg_ms=650,
     ),
     "medium": ReflexConfig(),
     "hard": ReflexConfig(
-        wait_min_ms=800, wait_max_ms=2500,
+        wait_min_ms=500, wait_max_ms=3500,
         perfect_ms=150, good_ms=400, max_counted_ms=1000,
         xp_perfect=20, xp_good=12, xp_slow=5,
         win_bonus=40, win_avg_ms=500,

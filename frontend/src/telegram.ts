@@ -47,6 +47,30 @@ function devMockUser(): TelegramUser | null {
   return { id: 9001, username: 'devplayer', first_name: 'Dev' };
 }
 
+const START_PARAM_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+function validStartParam(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  return START_PARAM_RE.test(raw) ? raw : null;
+}
+
+/** Referral code from the launch context. Telegram delivers `start_param`
+ * for `?startapp=` deep links; the URL query is a fallback (some clients
+ * and local-dev tunnels), never a trusted identity — the backend credits
+ * only validated initData identities. */
+function launchStartParam(unsafeParam: string | undefined, search: string): string | null {
+  const fromTelegram = validStartParam(unsafeParam ?? '');
+  if (fromTelegram) return fromTelegram;
+  try {
+    const params = new URLSearchParams(search);
+    return validStartParam(
+      params.get('tgWebAppStartParam') ?? params.get('startapp') ?? '',
+    );
+  } catch {
+    return null;
+  }
+}
+
 export function initWebApp(): WebAppContext {
   const wa = window.Telegram?.WebApp;
   const mock = devMockUser();
@@ -57,7 +81,7 @@ export function initWebApp(): WebAppContext {
       displayName: 'Dev Player',
       isTelegram: false,
       isDevMock: true,
-      startParam: null,
+      startParam: launchStartParam(undefined, window.location.search),
     };
   }
   if (!wa) {
@@ -72,8 +96,7 @@ export function initWebApp(): WebAppContext {
   const user = wa.initDataUnsafe?.user ?? null;
   const displayName =
     [user?.first_name, user?.last_name].filter(Boolean).join(' ') || user?.username || 'Player';
-  const rawParam = wa.initDataUnsafe?.start_param ?? '';
-  const startParam = /^[A-Za-z0-9_-]{1,64}$/.test(rawParam) ? rawParam : null;
+  const startParam = launchStartParam(wa.initDataUnsafe?.start_param, window.location.search);
   return { initData: wa.initData || '', user, displayName, isTelegram: true, isDevMock: false, startParam };
 }
 

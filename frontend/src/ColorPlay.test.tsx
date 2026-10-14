@@ -371,6 +371,39 @@ describe('ColorPlay', () => {
     expect(screen.queryByText(/Watch carefully/)).not.toBeInTheDocument();
   });
 
+  it('shows tap progress immediately, before the server responds', async () => {
+    // Level 3 start; the move request stays pending while we assert.
+    mockedApi.colorState.mockResolvedValue(
+      startedState({ display: [0, 2, 1], level: 3, max_level: 8 }),
+    );
+    await renderStarted();
+    await act(async () => {
+      vi.runAllTimers();
+    });
+    expect(screen.getByText(/tap 1 of 3/)).toBeInTheDocument();
+    let resolveMove!: (v: ColorState) => void;
+    mockedApi.move.mockImplementation(
+      () => new Promise<ColorState>((resolve) => { resolveMove = resolve; }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Red/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Blue/ }));
+    // No response yet — but progress already reflects both taps, and the
+    // buttons were never disabled by the in-flight request.
+    expect(screen.getByText(/tap 3 of 3/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Red/ })).not.toBeDisabled();
+    await act(async () => {
+      resolveMove(
+        startedState({
+          display: [0, 2, 1], level: 3, max_level: 8, position: 1,
+          moves: [{ value: 0, hit: true }],
+        }),
+      );
+    });
+    await act(async () => {});
+    // Server truth reconciles: one confirmed + one still pending.
+    expect(screen.getByText(/tap 3 of 3/)).toBeInTheDocument();
+  });
+
   it('accepts the same color repeatedly when the sequence requires it', async () => {
     mockedApi.colorState.mockResolvedValue(
       startedState({ display: [2, 2, 2], level: 3, max_level: 8 }),
@@ -496,7 +529,9 @@ describe('ColorPlay', () => {
         result: { outcome: 'loss', score: 2, xp_earned: 12, secret: null },
       }),
     );
-    mockedApi.start = vi.fn().mockResolvedValue({ session_id: 'sid-2' });
+    mockedApi.start = vi
+      .fn()
+      .mockResolvedValue({ session_id: 'sid-2' } as Awaited<ReturnType<typeof api.start>>);
     render(<ColorPlayScreen ctx={ctx} sessionId="sid-1" onExit={() => {}} onReplay={onReplay} />);
     await act(async () => {});
     await act(async () => {});

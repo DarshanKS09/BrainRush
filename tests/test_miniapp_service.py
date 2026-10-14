@@ -60,6 +60,7 @@ async def test_start_abandons_stale_then_creates_public_view(monkeypatch):
     )
     session = RecordingSession(
         script=[
+            FakeResult(rowcount=0),  # expire sweep: nothing stale
             user,  # start: user check (get)
             FakeResult(rows=[(stale_state, _session_row(user.id))]),  # sweep list
             _session_row(user.id),  # abandon: get started row
@@ -213,6 +214,7 @@ async def test_dashboard_shape_uses_real_numbers():
     profile = _profile(user.id, total_xp=150)
     session = RecordingSession(
         script=[
+            FakeResult(rowcount=0),  # expire sweep: nothing stale
             user,  # users.get_by_id
             FakeResult(rows=[profile]),  # profiles.get_by_user_id
             FakeResult(rows=[]),  # activities.get (none today)
@@ -236,3 +238,58 @@ async def test_dashboard_shape_uses_real_numbers():
     assert dash["best_reflex_score"] is None
     assert dash["rank"] == 3
     assert dash["active_games"] == []
+
+
+async def test_dashboard_expires_stale_and_cleans_orphan_states():
+    from sqlalchemy.dialects import postgresql
+
+    user = _user()
+    profile = _profile(user.id, total_xp=150)
+    session = RecordingSession(
+        script=[
+            FakeResult(rowcount=2),  # expire sweep: two stale rows
+            FakeResult(rowcount=1),  # orphan state cleanup
+            user,  # users.get_by_id
+            FakeResult(rows=[profile]),  # profiles.get_by_user_id
+            FakeResult(rows=[]),  # activities.get (none today)
+            FakeResult(rows=[3]),  # best_win_score
+            FakeResult(rows=[]),  # best color level
+            FakeResult(rows=[]),  # best reflex score
+            FakeResult(rows=[2]),  # rank count -> rank 3
+            FakeResult(rows=[]),  # active states (stale ones gone)
+        ]
+    )
+    svc = MiniappGameService(session)
+    dash = await svc.dashboard(user_id=user.id)
+
+    assert dash["rank"] == 3 and dash["active_games"] == []
+    assert session.tx_committed == 1 and session.commits == 0
+    first = str(
+        session.statements[0].compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "expired" in first
+
+
+async def test_history_expires_stale_before_reading():
+    from datetime import datetime, timezone
+
+    user = _user()
+    old = _session_row(user.id, status="expired")
+    old.started_at = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    old.ended_at = datetime(2026, 10, 2, tzinfo=timezone.utc)
+    session = RecordingSession(
+        script=[
+            FakeResult(rowcount=1),  # expire sweep: one stale row
+            FakeResult(rowcount=0),  # orphan state cleanup
+            FakeResult(rows=[(old, None)]),  # history select
+        ]
+    )
+    svc = MiniappGameService(session)
+    items = await svc.history(user_id=user.id)
+
+    assert len(items) == 1
+    assert items[0]["status"] == "expired"
+    assert items[0]["outcome"] is None and items[0]["xp_earned"] == 0
+    assert session.tx_committed == 1 and session.commits == 0

@@ -218,8 +218,7 @@ describe('ReflexPlay', () => {
     expect(screen.getByRole('button', { name: 'Lobby' })).toBeInTheDocument();
   });
 
-  it('replays at the same difficulty and cancels cleanly', async () => {
-    const onExit = vi.fn();
+  it('replays at the same difficulty and cancels cleanly', async () => {    const onExit = vi.fn();
     const onReplay = vi.fn();
     mockedApi.reflexState.mockResolvedValue(
       startedState({
@@ -240,5 +239,42 @@ describe('ReflexPlay', () => {
     await act(async () => {});
     expect(mockedApi.start).toHaveBeenCalledWith('test', 'reflex_rush', 'medium');
     expect(onReplay).toHaveBeenCalledWith('sid-2');
+  });
+
+  it('shows retry on submit failure and succeeds once on retry', async () => {
+    await renderAndStart();
+    for (let r = 0; r < 5; r++) {
+      await act(async () => {
+        vi.runAllTimers();
+      });
+      now += 210;
+      if (r === 4) {
+        mockedApi.finishReflex.mockRejectedValueOnce(new Error('network down'));
+      }
+      fireEvent.click(screen.getByRole('button', { name: 'Tap now' }));
+      await act(async () => {});
+      if (r < 4) {
+        await act(async () => {
+          vi.runAllTimers();
+        });
+        await act(async () => {
+          vi.runAllTimers();
+        });
+      }
+    }
+    await act(async () => {});
+    // Failed submit: actionable error + Retry, no stuck screen, no result yet.
+    expect(screen.getByText(/network down/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry submit' })).toBeInTheDocument();
+    expect(screen.queryByText('Lightning reflexes!')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry submit' }));
+    await act(async () => {});
+    await act(async () => {});
+    expect(screen.getByText('Lightning reflexes!')).toBeInTheDocument();
+    // Same submission id on retry: backend replay makes it idempotent.
+    const calls = mockedApi.finishReflex.mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0][3]).toBe(calls[1][3]);
   });
 });

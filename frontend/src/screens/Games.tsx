@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type GameInfo } from '../api';
-import { difficultyDisplayName, difficultySub } from '../gameutil';
+import { difficultyDisplayName, difficultySub, reflexWaitText } from '../gameutil';
 import type { WebAppContext } from '../telegram';
 import { GameCard } from '../components/GameCard';
 import { ErrorNotice, Loading, SectionTitle } from '../components/ui';
@@ -70,7 +70,7 @@ export function GamesScreen({
 
 function XpRulesLine({ game, difficulty }: { game: GameInfo; difficulty: string }) {
   const rules = game.xp_rules?.[difficulty] as
-    | { win_first_try?: number; win_last_try?: number; loss?: number; win?: number; loss_per_level?: number; win_bonus?: number }
+    | { win_first_try?: number; win_last_try?: number; loss?: number; win?: number; loss_per_level?: number; win_bonus?: number; win_avg_ms?: number }
     | undefined;
   if (!rules) return null;
   const text =
@@ -80,6 +80,22 @@ function XpRulesLine({ game, difficulty }: { game: GameInfo; difficulty: string 
         ? `Fast taps earn more · Win bonus: +${rules.win_bonus} XP`
         : `Win XP: ${rules.win_first_try} first try → ${rules.win_last_try} last try · Loss: +${rules.loss} XP`;
   return <p className="mt-2 text-center text-xs text-slate-400">{text}</p>;
+}
+
+function ReflexRules({ game, difficulty }: { game: GameInfo; difficulty: string }) {
+  if (game.id !== 'reflex_rush') return null;
+  const d = game.difficulties.find((x) => x.id === difficulty);
+  const winAvg = (game.xp_rules?.[difficulty] as { win_avg_ms?: number } | undefined)?.win_avg_ms;
+  return (
+    <div className="mt-2 rounded-xl bg-navy p-3 text-left text-xs text-slate-300">
+      <p className="font-bold text-white">⏱️ {d ? reflexWaitText({ id: d.id, wait_min_ms: d.wait_min_ms, wait_max_ms: d.wait_max_ms }) : ''}</p>
+      <p className="mt-1">5 rounds. Tapping before green is a false start: 0 points for that round, but it still counts.</p>
+      <p className="mt-1">
+        Faster valid taps earn more points and XP.
+        {winAvg !== undefined && ` Win: average ≤ ${winAvg} ms with at most 1 false start.`}
+      </p>
+    </div>
+  );
 }
 
 function DifficultyModal({
@@ -128,6 +144,7 @@ function DifficultyModal({
           ))}
         </div>
         <XpRulesLine game={picked} difficulty={difficulty} />
+        <ReflexRules game={picked} difficulty={difficulty} />
         {startError && <p className="mt-2 text-center text-sm text-red-300" role="alert">{startError}</p>}
         <div className="mt-4 flex gap-2">
           <button

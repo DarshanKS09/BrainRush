@@ -111,7 +111,11 @@ async def test_color_start_creates_prefixed_view(monkeypatch):
         "brainrush.services.miniapp.colors.new_sequence", lambda n, rng=None: [0, 1, 2]
     )
     user = _user()
-    session = RecordingSession(script=[user, FakeResult(rows=[])])
+    session = RecordingSession(script=[
+        FakeResult(rowcount=0),  # expire sweep: nothing stale
+        user,  # start: user check (get)
+        FakeResult(rows=[]),
+    ])
     svc = MiniappGameService(session)
     view = await svc.start_game(
         user_id=user.id, difficulty="easy", game_type="color_sequence"

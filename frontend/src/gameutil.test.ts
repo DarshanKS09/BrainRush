@@ -8,7 +8,9 @@ import {
   gameTitle,
   keypadReducer,
   outcomeLabel,
+  reflexWaitText,
   resumeHint,
+  sessionStatusLabel,
   xpPercent,
 } from './gameutil';
 
@@ -47,6 +49,25 @@ describe('labels', () => {
     expect(gameTitle('number_guessing')).toBe('Number Guessing');
     expect(resumeHint({ game_type: 'color_sequence', level: 4 })).toBe('Lv 4');
     expect(resumeHint({ game_type: 'number_guessing', attempts_left: 5 })).toBe('5 left');
+  });
+
+  it('labels session status before outcome', () => {
+    expect(sessionStatusLabel('abandoned', null)).toBe('Abandoned');
+    expect(sessionStatusLabel('expired', null)).toBe('Expired');
+    expect(sessionStatusLabel('completed', 'win')).toBe('Won');
+    expect(sessionStatusLabel('completed', 'loss')).toBe('Lost');
+    expect(sessionStatusLabel('completed', null)).toBe('In progress');
+    expect(sessionStatusLabel('started', null)).toBe('In progress');
+  });
+
+  it('describes reflex wait windows exactly', () => {
+    expect(reflexWaitText({ id: 'easy', wait_min_ms: 2000, wait_max_ms: 2000 }))
+      .toBe('Same wait every round: 2 s');
+    expect(reflexWaitText({ id: 'medium', wait_min_ms: 1000, wait_max_ms: 3000 }))
+      .toBe('Wait varies: 1–3 s');
+    expect(reflexWaitText({ id: 'hard', wait_min_ms: 500, wait_max_ms: 3500 }))
+      .toBe('Wait varies: 0.5–3.5 s');
+    expect(reflexWaitText({ id: 'easy' })).toBe('Wait for green, then tap');
   });
 });
 

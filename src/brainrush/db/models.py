@@ -1,7 +1,7 @@
 """Initial production-ready schema (tables only, no game logic).
 
 Tables: users, player_profiles, game_sessions, game_results, daily_activities,
-referral_codes, referral_attributions.
+referral_codes, referral_attributions, friend_codes, friendships.
 Primary keys are UUID; Telegram user IDs stay BIGINT. All timestamps are
 timezone-aware. Status/outcome use CHECK constraints instead of PG ENUMs so
 future value additions are non-destructive (no ALTER TYPE ... ADD VALUE).
@@ -218,6 +218,51 @@ class ReferralAttribution(Base):
     referrer_xp: Mapped[int] = mapped_column(Integer, nullable=False)
     referred_xp: Mapped[int] = mapped_column(Integer, nullable=False)
     credited_at: Mapped[datetime] = mapped_column(
+        _tz_now(), server_default=func.now(), nullable=False
+    )
+
+
+class FriendCode(Base):
+    """Stable per-user friend code. One row per user, created on demand.
+
+    Separate from referral codes on purpose: friendships never grant XP and
+    must never interact with referral attribution.
+    """
+
+    __tablename__ = "friend_codes"
+
+    code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        _tz_now(), server_default=func.now(), nullable=False
+    )
+
+
+class Friendship(Base):
+    """One row per unordered user pair (canonical user_low/user_high order).
+
+    Unique(user_low, user_high) plus the ordering makes duplicate friendships
+    (including concurrent inserts and A-adds-B vs B-adds-A races) impossible
+    at the database level. The relationship is symmetric: queries match
+    either side.
+    """
+
+    __tablename__ = "friendships"
+    __table_args__ = (
+        UniqueConstraint("user_low", "user_high", name="uq_friendships_pair"),
+        CheckConstraint("user_low != user_high", name="no_self_friendship"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    user_low: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    user_high: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
         _tz_now(), server_default=func.now(), nullable=False
     )
 

@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import { api, type DashboardData, type HistoryItem } from '../api';
-import { formatDate, outcomeLabel } from '../gameutil';
 import type { WebAppContext } from '../telegram';
 import { ErrorNotice, Loading, SectionTitle, StatTile, XpBar } from '../components/ui';
+import { FriendPanel } from '../components/FriendPanel';
 import { ReferralPanel } from '../components/ReferralPanel';
+import { HistoryRow } from './History';
 
-export function ProfileScreen({ ctx }: { ctx: WebAppContext }) {
+const PROFILE_PREVIEW_COUNT = 5;
+
+export function ProfileScreen({ ctx, onViewHistory }: { ctx: WebAppContext; onViewHistory: () => void }) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [error, setError] = useState('');
@@ -14,10 +17,10 @@ export function ProfileScreen({ ctx }: { ctx: WebAppContext }) {
   const load = () => {
     setLoading(true);
     setError('');
-    Promise.all([api.me(ctx.initData), api.history(ctx.initData, 20, 0)])
+    Promise.all([api.me(ctx.initData), api.history(ctx.initData, PROFILE_PREVIEW_COUNT, 0)])
       .then(([me, hist]) => {
         setData(me);
-        setHistory(hist.items);
+        setHistory(hist.items.slice(0, PROFILE_PREVIEW_COUNT));
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
@@ -66,18 +69,23 @@ export function ProfileScreen({ ctx }: { ctx: WebAppContext }) {
         {history.length === 0 ? (
           <p className="rounded-2xl bg-panel p-4 text-center text-sm text-slate-500">No games played yet.</p>
         ) : (
-          <ul className="space-y-2">
-            {history.map((h) => (
-              <li key={h.session_id} className="flex items-center justify-between rounded-2xl bg-panel px-3 py-2.5 text-sm shadow-card">
-                <span className="font-semibold text-white">{outcomeLabel(h.outcome)}</span>
-                <span className="text-slate-400">
-                  {h.score} tries · +{h.xp_earned} XP · {formatDate(h.started_at)}
-                </span>
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul className="space-y-2">
+              {history.map((h) => (
+                <HistoryRow key={h.session_id} h={h} />
+              ))}
+            </ul>
+            <button
+              onClick={onViewHistory}
+              className="mt-2 w-full rounded-xl bg-panel py-2.5 text-sm font-bold text-neon-cyan active:scale-[0.99]"
+            >
+              View Full History →
+            </button>
+          </>
         )}
       </div>
+
+      <FriendPanel ctx={ctx} />
 
       <ReferralPanel ctx={ctx} />
     </div>

@@ -76,16 +76,25 @@ def _result_row(session_id, score=1000, outcome="win", xp=50):
 
 # --- pure rules ------------------------------------------------------------
 
-def test_difficulty_wait_windows_differ():
+def test_difficulty_wait_windows_match_spec():
     assert set(reflex.REFLEX_DIFFICULTIES) == {"easy", "medium", "hard"}
     easy = reflex.REFLEX_DIFFICULTIES["easy"]
+    medium = reflex.REFLEX_DIFFICULTIES["medium"]
     hard = reflex.REFLEX_DIFFICULTIES["hard"]
+    # Easy: one fixed wait every round (predictable).
+    assert easy.wait_min_ms == easy.wait_max_ms
+    # Normal: varies inside a defined range.
+    assert medium.wait_min_ms < medium.wait_max_ms
+    # Hard: randomized inside a WIDER range than Normal.
+    assert (hard.wait_max_ms - hard.wait_min_ms) > (medium.wait_max_ms - medium.wait_min_ms)
+    # Easy floor stays slower than hard's fastest possible wait.
     assert easy.wait_min_ms > hard.wait_min_ms
-    assert easy.wait_max_ms > hard.wait_max_ms
     rng = random.Random(3)
     for did, cfg in reflex.REFLEX_DIFFICULTIES.items():
         w = reflex.random_wait_ms(cfg, rng)
         assert cfg.wait_min_ms <= w <= cfg.wait_max_ms
+    # Easy is deterministic: same wait every round.
+    assert len({reflex.random_wait_ms(easy, random.Random(i)) for i in range(20)}) == 1
 
 
 def test_reaction_validation():
@@ -173,7 +182,11 @@ def test_catalog_registers_reflex_playable_and_preserves_others():
 
 async def test_reflex_start_returns_public_view_without_secret():
     user = _user()
-    session = RecordingSession(script=[user, FakeResult(rows=[])])
+    session = RecordingSession(script=[
+        FakeResult(rowcount=0),  # expire sweep: nothing stale
+        user,
+        FakeResult(rows=[]),
+    ])
     svc = MiniappGameService(session)
     view = await svc.start_game(user_id=user.id, difficulty="medium", game_type="reflex_rush")
     assert view["game_type"] == "reflex_rush"
@@ -344,6 +357,7 @@ async def test_reflex_get_state_and_cancel_and_dashboard():
         FakeResult(rowcount=1),
         done_abandoned,
         # dashboard reads
+        FakeResult(rowcount=0),  # expire sweep: nothing stale
         user,
         FakeResult(rows=[profile]),
         FakeResult(rows=[]),

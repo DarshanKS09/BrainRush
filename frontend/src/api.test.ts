@@ -82,4 +82,19 @@ describe('api client', () => {
     const [, init] = fetch.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toEqual({ code: 'AB12CD34EF' });
   });
+
+  it('passes an abort signal for the reflex submit timeout', async () => {
+    const fetch = mockFetch(200, { finished: true });
+    await api.finishReflex('data', 'sid-1', [], 'sub-1');
+    const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('surfaces aborted requests as errors', async () => {
+    const fetch = vi.fn().mockRejectedValue(new DOMException('timed out', 'AbortError'));
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      api.finishReflex('data', 'sid-1', [], 'sub-1'),
+    ).rejects.toThrow();
+  });
 });

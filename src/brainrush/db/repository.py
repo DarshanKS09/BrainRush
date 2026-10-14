@@ -13,10 +13,10 @@ Rules:
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Generic, TypeVar
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,8 @@ from brainrush.db.base import Base
 from brainrush.db.errors import ConflictError, NotFoundError
 from brainrush.db.models import (
     DailyActivity,
+    FriendCode,
+    Friendship,
     GameResult,
     GameSession,
     PlayerProfile,
@@ -82,6 +84,15 @@ class UserRepository(BaseRepository[User]):
             select(User).where(User.telegram_id == telegram_id)
         )
         return result.scalar_one_or_none()
+
+    async def list_by_ids(self, user_ids: list[uuid.UUID]) -> list[User]:
+        """Batch fetch for small id sets (friends list). No ordering guarantee."""
+        if not user_ids:
+            return []
+        result = await self.session.execute(
+            select(User).where(User.id.in_(user_ids))
+        )
+        return list(result.scalars().all())
 
     async def create(
         self,
@@ -148,6 +159,17 @@ class PlayerProfileRepository(BaseRepository[PlayerProfile]):
             select(PlayerProfile).where(PlayerProfile.user_id == user_id)
         )
         return result.scalar_one_or_none()
+
+    async def list_by_user_ids(
+        self, user_ids: list[uuid.UUID]
+    ) -> list[PlayerProfile]:
+        """Batch fetch for small id sets (friends list). No ordering guarantee."""
+        if not user_ids:
+            return []
+        result = await self.session.execute(
+            select(PlayerProfile).where(PlayerProfile.user_id.in_(user_ids))
+        )
+        return list(result.scalars().all())
 
     async def create(self, *, user_id: uuid.UUID) -> PlayerProfile:
         profile = PlayerProfile(user_id=user_id)
@@ -312,8 +334,7 @@ class GameSessionRepository(BaseRepository[GameSession]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def history_by_user(
-        self,
+    async def history_by_user(        self,
         *,
         user_id: uuid.UUID,
         limit: int = 20,
@@ -337,6 +358,29 @@ class GameSessionRepository(BaseRepository[GameSession]):
             .offset(offset)
         )
         return list(result.all())
+
+    async def expire_stale_started(
+        self, *, user_id: uuid.UUID, before: datetime
+    ) -> int:
+        """Mark the user's `started` sessions older than `before` as expired.
+
+        Single atomic UPDATE: interrupted games (app closed, failed submit,
+        exited lobby) stop looking active without deleting any history.
+        Returns the number of rows transitioned.
+        """
+        if not isinstance(before, datetime):
+            raise ValueError("before must be a datetime")
+        result = await self.session.execute(
+            update(GameSession)
+            .where(
+                GameSession.user_id == user_id,
+                GameSession.status == "started",
+                GameSession.started_at < before,
+            )
+            .values(status="expired", ended_at=func.now())
+        )
+        await self.session.flush()
+        return result.rowcount or 0
 
     async def create(self, *, user_id: uuid.UUID, game_type: str) -> GameSession:
         game_type = _require_name(game_type, field="game_type", limit=64)
@@ -582,6 +626,24 @@ class WebappStateRepository(BaseRepository[WebappGameState]):
         await self.session.delete(row)
         await self.session.flush()
 
+    async def delete_for_expired_sessions(self, *, user_id: uuid.UUID) -> int:
+        """Drop in-progress rows whose session already ended (expired or
+        abandoned). They can never resume: resume lists `started` only, and
+        guess/tap on them raises. Returns the number removed."""
+        result = await self.session.execute(
+            delete(WebappGameState).where(
+                WebappGameState.user_id == user_id,
+                WebappGameState.session_id.in_(
+                    select(GameSession.id).where(
+                        GameSession.user_id == user_id,
+                        GameSession.status.in_(["abandoned", "expired"]),
+                    )
+                ),
+            )
+        )
+        await self.session.flush()
+        return result.rowcount or 0
+
 
 def _require_code(value: Any) -> str:
     import re
@@ -676,3 +738,86 @@ class ReferralRepository(BaseRepository[ReferralCode]):
             .where(ReferralAttribution.referrer_user_id == referrer_user_id)
         )
         return result.scalar_one_or_none() or 0
+
+
+def _require_friend_code(value: Any) -> str:
+    import re
+
+    if not isinstance(value, str):
+        raise ValueError("friend code must be a string")
+    code = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9]{4,32}", code):
+        raise ValueError("invalid friend code")
+    return code
+
+
+def _new_friend_code() -> str:
+    import secrets
+    import string
+
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(10))
+
+
+def _canonical_pair(a: uuid.UUID, b: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:
+    """Order-independent pair key: the same row no matter who adds whom."""
+    return (a, b) if a.bytes < b.bytes else (b, a)
+
+
+class FriendRepository(BaseRepository[Friendship]):
+    """Friend codes + symmetric friendships. No commits; services own txns."""
+
+    async def get_or_create_code(self, *, user_id: uuid.UUID) -> tuple[FriendCode, bool]:
+        """Stable per-user code: repeated calls never mint extras."""
+        result = await self.session.execute(
+            select(FriendCode).where(FriendCode.user_id == user_id)
+        )
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            return existing, False
+        row = FriendCode(code=_new_friend_code(), user_id=user_id)
+        self.session.add(row)
+        await self.session.flush()
+        return row, True
+
+    async def get_by_code(self, *, code: str) -> FriendCode | None:
+        code = _require_friend_code(code)
+        result = await self.session.execute(
+            select(FriendCode).where(FriendCode.code == code)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_pair(self, a: uuid.UUID, b: uuid.UUID) -> Friendship | None:
+        low, high = _canonical_pair(a, b)
+        result = await self.session.execute(
+            select(Friendship).where(
+                Friendship.user_low == low, Friendship.user_high == high
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def record_pair(self, a: uuid.UUID, b: uuid.UUID) -> Friendship:
+        """Insert one friendship row. The unique pair constraint makes a
+        second insert for the same pair fail atomically (IntegrityError),
+        including A-adds-B vs B-adds-A races."""
+        low, high = _canonical_pair(a, b)
+        if low == high:
+            raise ValueError("cannot befriend yourself")
+        row = Friendship(user_low=low, user_high=high)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def list_pairs(self, *, user_id: uuid.UUID) -> list[Friendship]:
+        """All friendships involving the user, oldest first."""
+        result = await self.session.execute(
+            select(Friendship)
+            .where(
+                or_(
+                    Friendship.user_low == user_id,
+                    Friendship.user_high == user_id,
+                )
+            )
+            .order_by(Friendship.created_at.asc())
+        )
+        return list(result.scalars().all())
