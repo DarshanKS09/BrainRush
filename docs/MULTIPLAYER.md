@@ -60,7 +60,12 @@ cannot be left formally — the seat simply counts as abandoned.
 | Number Guessing | attempts used | no (fewer tries) | earlier finish; private guesses never exposed |
 | Color Sequence | levels completed | yes | earlier finish |
 | Reflex Rush | points | yes | lower `avg_ms`, then earlier finish |
-| Perfect Second | timing error (ms) | no (smaller error) | exact measured error, then earlier finish |
+| Perfect Second | timing error (ms, hundredth precision) | no (smaller error) | exact quantized error, then earlier finish |
+
+All Perfect Second comparisons (accuracy, perfect detection, score,
+ranking, XP) run on times quantized to hundredths (10 ms): 100% accuracy
+only when the measured stop rounds to exactly the target. Near misses
+always score below 100.
 
 `rank_participants` sorts by (score direction, tie-break, user id) and assigns
 **dense ranks** — equal keys share a rank; a remaining tie is never broken

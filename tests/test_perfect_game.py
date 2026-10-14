@@ -103,29 +103,66 @@ def test_medium_never_hundredths_and_easy_whole_seconds():
     assert all(t % 1000 == 0 for t in easy)
 
 
+def test_quantize_ms_rounds_half_up_to_hundredths():
+    assert perfect.quantize_ms(6000.0) == 6000
+    assert perfect.quantize_ms(5999.97) == 6000
+    assert perfect.quantize_ms(5994.9) == 5990
+    assert perfect.quantize_ms(5995.0) == 6000  # exact halves round up
+    assert perfect.quantize_ms(5994.0) == 5990
+    assert perfect.quantize_ms(0.0) == 0
+    assert perfect.DISPLAY_UNIT_MS == 10
+
+
 def test_xp_table_and_bounds():
-    assert perfect.xp_for_accuracy(100.0) == 100
-    assert perfect.xp_for_accuracy(90.0) == 90
-    assert perfect.xp_for_accuracy(70.0) == 70
-    assert perfect.xp_for_accuracy(50.0) == 50
-    assert perfect.xp_for_accuracy(10.0) == 10
-    assert perfect.xp_for_accuracy(0.0) == 0
-    # Halfway cases round upward.
-    assert perfect.xp_for_accuracy(85.0) == 90
-    assert perfect.xp_for_accuracy(95.0) == 100
-    assert perfect.xp_for_accuracy(5.0) == 10
-    assert perfect.xp_for_accuracy(84.9) == 80
-    # Clamp: never negative, never above 100.
-    assert perfect.xp_for_accuracy(150.0) == 100
-    assert perfect.xp_for_accuracy(-20.0) == 0
+    kw = {"target_ms": 10_000}
+    assert perfect.xp_for_accuracy(error_ms=0, **kw) == 100
+    assert perfect.xp_for_accuracy(error_ms=1_000, **kw) == 90
+    assert perfect.xp_for_accuracy(error_ms=3_000, **kw) == 70
+    assert perfect.xp_for_accuracy(error_ms=5_000, **kw) == 50
+    assert perfect.xp_for_accuracy(error_ms=9_000, **kw) == 10
+    assert perfect.xp_for_accuracy(error_ms=9_999, **kw) == 0  # truncates, never rounds up
+    assert perfect.xp_for_accuracy(error_ms=10_000, **kw) == 0
+    assert perfect.xp_for_accuracy(error_ms=25_000, **kw) == 0
+    # A near miss is strictly below 100: no flat award for playing.
+    assert perfect.xp_for_accuracy(error_ms=10, target_ms=6_000) == 99
+    assert perfect.xp_for_accuracy(error_ms=1, target_ms=6_000) == 99
+    for bad in ({"error_ms": -1, "target_ms": 1000},
+                {"error_ms": 0, "target_ms": 0},
+                {"error_ms": 0, "target_ms": -5}):
+        with pytest.raises(ValueError):
+            perfect.xp_for_accuracy(**bad)
 
 
-def test_score_result_proportional_and_unrounded():
+def test_score_result_exact_and_near_miss():
+    target = 6_000  # displayed as 6.00 s
+    exact = perfect.score_result(target_ms=target, actual_ms=6_000.0)
+    assert exact["actual_ms"] == 6_000
+    assert exact["error_ms"] == 0
+    assert exact["accuracy_percent"] == 100.0
+    assert exact["score_ms"] == 0
+    assert exact["xp"] == 100
+    assert exact["won"] is True
+    # 6004 ms displays as 6.00 s and rounds to exactly 6.00: still perfect.
+    assert perfect.score_result(target_ms=target, actual_ms=6_004.0)["accuracy_percent"] == 100.0
+    # 5.99 s and 6.03 s display differently and are misses, never 100%.
+    miss_low = perfect.score_result(target_ms=target, actual_ms=5_990.0)
+    assert miss_low["actual_ms"] == 5_990
+    assert miss_low["error_ms"] == 10
+    assert miss_low["accuracy_percent"] == pytest.approx(99.833333, abs=1e-6)
+    assert miss_low["accuracy_percent"] < 100.0
+    assert miss_low["xp"] == 99
+    assert miss_low["won"] is True  # within 10%, but not perfect
+    miss_high = perfect.score_result(target_ms=target, actual_ms=6_030.0)
+    assert miss_high["error_ms"] == 30
+    assert miss_high["accuracy_percent"] < 100.0
+    assert miss_high["xp"] == 99
+    # Exact hundredth halfway rounds up into the next hundredth.
+    assert perfect.score_result(target_ms=target, actual_ms=5_995.0)["actual_ms"] == 6_000
+    assert perfect.score_result(target_ms=target, actual_ms=5_995.0)["accuracy_percent"] == 100.0
+
+
+def test_score_result_proportional():
     target = 10_000
-    assert perfect.score_result(target_ms=target, actual_ms=10_000.0) == {
-        "error_ms": 0.0, "error_percent": 0.0, "accuracy_percent": 100.0,
-        "score_ms": 0, "xp": 100, "won": True,
-    }
     ten = perfect.score_result(target_ms=target, actual_ms=9_000.0)
     assert ten["xp"] == 90 and ten["won"] is True
     assert perfect.score_result(target_ms=target, actual_ms=7_000.0)["xp"] == 70
@@ -134,10 +171,6 @@ def test_score_result_proportional_and_unrounded():
     assert zero["xp"] == 0 and zero["won"] is False
     over = perfect.score_result(target_ms=target, actual_ms=25_000.0)
     assert over["xp"] == 0 and over["won"] is False
-    # Full measured precision: a 0.4 ms miss is a 0.4 ms error, not 0.
-    fine = perfect.score_result(target_ms=5_000, actual_ms=5_000.4)
-    assert fine["error_ms"] == pytest.approx(0.4)
-    assert fine["xp"] == 100
     with pytest.raises(ValueError):
         perfect.score_result(target_ms=0, actual_ms=1.0)
     with pytest.raises(ValueError):
@@ -145,9 +178,11 @@ def test_score_result_proportional_and_unrounded():
 
 
 def test_win_boundary_exact_ten_percent():
-    # Exactly 10% error still wins (multiplicative comparison, no float drift).
+    # Exactly 10% error still wins (integer comparison, no float drift).
     assert perfect.score_result(target_ms=7_000, actual_ms=6_300.0)["won"] is True
-    assert perfect.score_result(target_ms=7_000, actual_ms=6_299.0)["won"] is False
+    # 6299 ms quantizes to 6300 (still exactly 10%); 6294 ms does not.
+    assert perfect.score_result(target_ms=7_000, actual_ms=6_299.0)["won"] is True
+    assert perfect.score_result(target_ms=7_000, actual_ms=6_294.0)["won"] is False
 
 
 def test_parse_actual_ms_bounds():

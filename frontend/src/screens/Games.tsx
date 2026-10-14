@@ -11,13 +11,11 @@ export function GamesScreen({
   ctx,
   onStart,
   onOpenMatch,
-  onOpenMatches,
   onSetupMatch,
 }: {
   ctx: WebAppContext;
   onStart: (gameId: string, sessionId: string) => void;
   onOpenMatch?: (matchId: string) => void;
-  onOpenMatches?: () => void;
   onSetupMatch?: () => void;
 }) {
   const [games, setGames] = useState<GameInfo[]>([]);
@@ -57,7 +55,7 @@ export function GamesScreen({
     <div className="space-y-3">
       <SectionTitle>Game lobby</SectionTitle>
       <button
-        onClick={() => (onSetupMatch ?? onOpenMatches ?? (() => {}))()}
+        onClick={() => (onSetupMatch ?? (() => {}))()}
         className="w-full rounded-3xl bg-gradient-to-r from-amber-500 via-rose-500 to-neon-purple p-4 text-left shadow-glow active:scale-[0.99]"
       >
         <span className="flex items-center gap-2 text-lg font-black text-white">
@@ -66,13 +64,6 @@ export function GamesScreen({
         <span className="mt-0.5 block text-xs font-medium text-white/85">
           Private room · pick a game &amp; mode · share a code or link
         </span>
-      </button>
-      <button
-        onClick={onOpenMatches ?? (() => {})}
-        className="w-full rounded-2xl bg-gradient-to-r from-neon-purple/20 to-neon-cyan/20 px-3 py-2.5 text-left ring-1 ring-neon-cyan/30 active:scale-[0.99]"
-      >
-        <span className="text-sm font-bold text-white">⚔️ Multiplayer matches</span>
-        <span className="block text-xs text-slate-300">1v1 duels, free-for-all, tournaments — invite friends via link</span>
       </button>
       {games.map((g) => (
         <GameCard key={g.id} game={g} onPlay={(game) => { setPicked(game); setStartError(''); }} />

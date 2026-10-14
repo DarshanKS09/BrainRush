@@ -1158,6 +1158,50 @@ async def test_perfect_match_shares_one_target():
     assert done["status"] == "completed"
     ranks = {p["user_id"]: p["rank"] for p in done["participants"]}
     assert ranks[str(host.id)] == 1 and ranks[str(guest.id)] == 2
+    # Winner: 10 completion + 10 win bonus; loser: 10. Exactly once each.
+    paid = {p["user_id"]: p["xp_earned"] for p in done["participants"]}
+    assert paid == {str(host.id): 20, str(guest.id): 10}
+    xp_calls = svc.profiles.xp_calls
+    assert sorted(xp_calls) == sorted([
+        (host.id, 10), (host.id, 10), (guest.id, 10),
+    ])
+    assert session.commits == 0
+
+
+async def test_perfect_match_duplicate_submit_replays_without_repay():
+    from brainrush.game import perfect_second as perfect
+
+    session = RecordingSession()
+    svc = _service(session)
+    host = _registered(svc, 111)
+    guest = _registered(svc, 222)
+    mid = await _lobby(svc, host, game="perfect_second", mode="duel",
+                       difficulty="medium")
+    await _join(svc, guest, mid)
+    await _start(svc, host, mid)
+    expected = perfect.match_target_ms(mid, "medium")
+    solo = await _perfect_solo(svc, host, expected, float(expected))
+    first = await svc.submit_result(user_id=host.id, match_id=mid,
+                                    session_id=solo.id)
+    assert first["status"] == "active"
+    # Same session again: idempotent replay, no extra seat, no error.
+    replay = await svc.submit_result(user_id=host.id, match_id=mid,
+                                     session_id=solo.id)
+    assert replay["status"] == "active"
+    # A different session for the same seat is rejected.
+    other = await _perfect_solo(svc, host, expected, float(expected) + 100)
+    with pytest.raises(ConflictError):
+        await svc.submit_result(user_id=host.id, match_id=mid,
+                                session_id=other.id)
+    # Finish via the guest, then finalize twice: XP stays single-paid.
+    guest_solo = await _perfect_solo(svc, guest, expected, float(expected) + 500)
+    done = await svc.submit_result(user_id=guest.id, match_id=mid,
+                                   session_id=guest_solo.id)
+    assert done["status"] == "completed"
+    again = await svc.finalize_match(user_id=host.id, match_id=mid)
+    assert again["status"] == "completed"
+    assert svc.profiles.by_user[host.id].total_xp == 20
+    assert svc.profiles.by_user[guest.id].total_xp == 10
     assert session.commits == 0
 
 

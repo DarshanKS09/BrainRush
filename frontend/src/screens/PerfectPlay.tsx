@@ -225,6 +225,11 @@ export function PerfectPlayScreen({
   }
 
   const targetText = formatSeconds(view.target_ms, view.difficulty);
+  // Hard mode hides the running readout: the clock runs internally, but no
+  // changing numeric value may appear until after STOP. The target stays
+  // visible in every mode; this branch is phase-driven so reconnects and
+  // result transitions cannot leak the timer either.
+  const hideRunning = view.difficulty === 'hard' && phase === 'running';
 
   return (
     <div className="space-y-3">
@@ -256,10 +261,13 @@ export function PerfectPlayScreen({
         <div
           className="mx-auto mt-3 flex h-24 max-w-xs items-center justify-center rounded-2xl bg-abyss text-5xl font-black tabular-nums text-white"
           aria-live="polite"
-          aria-label={`Elapsed time ${formatElapsed(elapsed)}`}
+          aria-label={hideRunning ? 'Elapsed time hidden until you stop' : `Elapsed time ${formatElapsed(elapsed)}`}
         >
-          {phase === 'running' ? formatElapsed(elapsed) : '0.00 s'}
+          {phase === 'running' ? (hideRunning ? '– – . – –' : formatElapsed(elapsed)) : '0.00 s'}
         </div>
+        {hideRunning && (
+          <p className="mt-1 text-xs text-slate-400">Hard mode: trust your sense of time — no live readout.</p>
+        )}
         {best !== null && (
           <p className="mt-2 text-xs text-slate-400">⏱️ Personal best error: {formatSeconds(best, view.difficulty)}</p>
         )}
@@ -272,6 +280,7 @@ export function PerfectPlayScreen({
           <>
             <p className="mx-auto mt-2 max-w-xs text-sm text-slate-300">
               Tap START, then tap STOP exactly when you believe {targetText} have passed.
+              {view.difficulty === 'hard' && ' The live timer stays hidden — feel the seconds.'}
             </p>
             <button
               onClick={begin}

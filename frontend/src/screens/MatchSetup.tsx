@@ -3,6 +3,7 @@ import { api, ApiError, type GameInfo } from '../api';
 import { difficultyDisplayName, gameTitle } from '../gameutil';
 import type { WebAppContext } from '../telegram';
 import { ErrorNotice, Loading, SectionTitle } from '../components/ui';
+import { MatchLists } from './MatchLists';
 import { haptic } from '../telegram';
 
 const MODES = [
@@ -49,6 +50,11 @@ export function JoinByCode({ ctx, onJoined }: { ctx: WebAppContext; onJoined: (m
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) {
         setError('Room not found. Please check the code.');
+      } else if (e instanceof ApiError && e.status === 409) {
+        // Full, expired, or finished rooms report a specific reason.
+        setError(e.message);
+      } else if (e instanceof ApiError && e.status === 422) {
+        setError('That code looks invalid. Room codes are 6 letters/digits.');
       } else {
         setError(e instanceof Error ? e.message : 'Could not join the room.');
       }
@@ -101,6 +107,68 @@ export function MatchSetupScreen({
   onOpenMatch: (matchId: string) => void;
   onBack: () => void;
 }) {
+  const [panel, setPanel] = useState<'create' | 'join'>('create');
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <button
+          onClick={onBack}
+          className="rounded-xl bg-panel px-3 py-1.5 text-sm font-semibold text-slate-300 active:scale-95"
+          aria-label="Back to games"
+        >
+          ← Games
+        </button>
+        <span className="rounded-full bg-panel px-3 py-1 text-xs font-bold uppercase tracking-wider text-neon-cyan">
+          Private room
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2" role="group" aria-label="Room actions">
+        <button
+          onClick={() => setPanel('create')}
+          aria-pressed={panel === 'create'}
+          className={`rounded-2xl py-3 text-sm font-black active:scale-[0.99] ${
+            panel === 'create'
+              ? 'bg-gradient-to-r from-neon-purple to-neon-cyan text-white shadow-glow'
+              : 'bg-panel text-slate-300'
+          }`}
+        >
+          ➕ Create Room
+        </button>
+        <button
+          onClick={() => setPanel('join')}
+          aria-pressed={panel === 'join'}
+          className={`rounded-2xl py-3 text-sm font-black active:scale-[0.99] ${
+            panel === 'join'
+              ? 'bg-gradient-to-r from-neon-purple to-neon-cyan text-white shadow-glow'
+              : 'bg-panel text-slate-300'
+          }`}
+        >
+          🔑 Join Room
+        </button>
+      </div>
+
+      {panel === 'create' ? (
+        <CreateRoomForm ctx={ctx} onOpenMatch={onOpenMatch} />
+      ) : (
+        <JoinByCode ctx={ctx} onJoined={onOpenMatch} />
+      )}
+
+      <MatchLists ctx={ctx} onOpen={onOpenMatch} />
+    </div>
+  );
+}
+
+/** Room creation: game → mode → limit → confirm. Modes come from the
+ * selected game's multiplayer adapter (unsupported modes are never
+ * listed); limits clamp to the mode's range. */
+export function CreateRoomForm({
+  ctx,
+  onOpenMatch,
+}: {
+  ctx: WebAppContext;
+  onOpenMatch: (matchId: string) => void;
+}) {
   const [games, setGames] = useState<GameInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -124,7 +192,11 @@ export function MatchSetupScreen({
   }, [ctx.initData]);
 
   const game = games.find((g) => g.id === gameId) ?? null;
-  const modeInfo = MODES.find((m) => m.id === mode) ?? MODES[0];
+  // Only the selected game's adapter modes are offered; unsupported modes
+  // never appear as playable. Falls back to the first supported mode.
+  const supportedModes = MODES.filter((m) => game?.multiplayer?.modes.includes(m.id) ?? true);
+  const effectiveMode = supportedModes.some((m) => m.id === mode) ? mode : (supportedModes[0]?.id ?? 'duel');
+  const modeInfo = MODES.find((m) => m.id === effectiveMode) ?? MODES[0];
   const cappedMax = Math.min(Math.max(maxPlayers, modeInfo.min), modeInfo.cap);
 
   const create = async () => {
@@ -135,9 +207,9 @@ export function MatchSetupScreen({
       const view = await api.matchCreate(
         ctx.initData,
         game.id,
-        mode,
+        effectiveMode,
         difficulty,
-        mode === 'duel' ? undefined : cappedMax,
+        effectiveMode === 'duel' ? undefined : cappedMax,
       );
       haptic('success');
       onOpenMatch(view.match_id);
@@ -153,21 +225,6 @@ export function MatchSetupScreen({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <button
-          onClick={onBack}
-          className="rounded-xl bg-panel px-3 py-1.5 text-sm font-semibold text-slate-300 active:scale-95"
-          aria-label="Back to games"
-        >
-          ← Games
-        </button>
-        <span className="rounded-full bg-panel px-3 py-1 text-xs font-bold uppercase tracking-wider text-neon-cyan">
-          Private room
-        </span>
-      </div>
-
-      <JoinByCode ctx={ctx} onJoined={onOpenMatch} />
-
       <div>
         <SectionTitle>Step 1 — Pick a game</SectionTitle>
         <ul className="mt-2 space-y-2">
@@ -177,7 +234,16 @@ export function MatchSetupScreen({
             return (
               <li key={g.id}>
                 <button
-                  onClick={() => mp && setGameId(g.id)}
+                  onClick={() => {
+                    if (!mp) return;
+                    setGameId(g.id);
+                    // Keep the mode inside the newly selected game's range.
+                    const supported = MODES.filter((m) => g.multiplayer?.modes.includes(m.id) ?? true);
+                    if (!supported.some((m) => m.id === mode) && supported[0]) {
+                      setMode(supported[0].id);
+                      setMaxPlayers(Math.min(Math.max(supported[0].min + 1, supported[0].min), supported[0].cap));
+                    }
+                  }}
                   disabled={!mp}
                   aria-pressed={selected}
                   className={`flex w-full items-center justify-between gap-2 rounded-2xl px-3 py-2.5 text-left shadow-card active:scale-[0.99] disabled:cursor-default ${
@@ -207,16 +273,16 @@ export function MatchSetupScreen({
       <div>
         <SectionTitle>Step 2 — Pick a mode</SectionTitle>
         <div className="mt-2 grid grid-cols-3 gap-2">
-          {MODES.map((m) => (
+          {supportedModes.map((m) => (
             <button
               key={m.id}
               onClick={() => {
                 setMode(m.id);
                 setMaxPlayers(Math.min(Math.max(m.min + 1, m.min), m.cap));
               }}
-              aria-pressed={mode === m.id}
+              aria-pressed={effectiveMode === m.id}
               className={`rounded-xl px-2 py-2.5 text-xs font-bold ${
-                mode === m.id
+                effectiveMode === m.id
                   ? 'bg-gradient-to-br from-neon-purple to-neon-cyan text-white shadow-glow'
                   : 'bg-panel text-slate-300 active:scale-95'
               }`}
@@ -229,7 +295,7 @@ export function MatchSetupScreen({
           ))}
         </div>
         <p className="mt-1 text-xs text-slate-400">{modeInfo.desc}</p>
-        {mode !== 'duel' && (
+        {effectiveMode !== 'duel' && (
           <div className="mt-2 flex items-center justify-between rounded-xl bg-panel px-3 py-2">
             <span className="text-xs font-bold text-slate-300">Max players</span>
             <span className="flex items-center gap-3">
@@ -285,7 +351,7 @@ export function MatchSetupScreen({
         </button>
         <p className="mt-1 text-center text-[11px] text-slate-500">
           You&apos;ll get a room code + invite link to share. Minimum to start:{' '}
-          {mode === 'duel' ? '2 players' : `${modeInfo.min} players`}.
+          {effectiveMode === 'duel' ? '2 players' : `${modeInfo.min} players`}.
         </p>
       </div>
     </div>

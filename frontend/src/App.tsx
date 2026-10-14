@@ -277,7 +277,6 @@ export default function App() {
             ctx={ctx}
             onStart={(gameId, sessionId) => setRoute({ name: 'play', gameId, sessionId })}
             onOpenMatch={(matchId) => setRoute({ name: 'match', matchId })}
-            onOpenMatches={() => setRoute({ name: 'matches' })}
             onSetupMatch={() => setRoute({ name: 'setup-match' })}
           />
         )}

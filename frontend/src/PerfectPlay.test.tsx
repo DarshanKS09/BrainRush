@@ -166,4 +166,52 @@ describe('PerfectPlay', () => {
     await act(async () => {});
     expect(mockedApi.stopPerfect).toHaveBeenCalledTimes(1);
   });
+
+  it('shows the live timer while running on easy/medium', async () => {
+    await renderReady();
+    fireEvent.click(screen.getByRole('button', { name: /Start clock/ }));
+    await act(async () => {});
+    now += 1500;
+    act(() => {
+      vi.advanceTimersByTime(50);
+    });
+    expect(screen.getByText('1.50 s')).toBeInTheDocument();
+  });
+
+  it('hard mode shows the target but hides the running timer until STOP', async () => {
+    mockedApi.perfectState.mockResolvedValue(
+      startedState({ difficulty: 'hard', target_ms: 5340 }),
+    );
+    render(<PerfectPlayScreen ctx={ctx} sessionId="sid-1" onExit={() => {}} onReplay={() => {}} />);
+    await act(async () => {});
+    await act(async () => {});
+    // Target visible before the attempt starts.
+    expect(screen.getByText('5.34 s')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Start clock/ }));
+    await act(async () => {});
+    now += 5340;
+    act(() => {
+      vi.advanceTimersByTime(50);
+    });
+    // No numeric readout while running — only the mask + target.
+    expect(screen.getByLabelText(/Elapsed time hidden/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Elapsed time \d/)).toBeNull();
+    expect(screen.getAllByText('5.34 s').length).toBeGreaterThanOrEqual(1); // target stays visible
+    // After STOP the real values are revealed.
+    mockedApi.stopPerfect.mockResolvedValue(
+      startedState({
+        difficulty: 'hard',
+        finished: true,
+        status: 'completed',
+        result: {
+          outcome: 'win', score: 0, xp_earned: 100, secret: null,
+          target_ms: 5340, actual_ms: 5340, error_ms: 0, accuracy_percent: 100,
+        },
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /STOP/ }));
+    await act(async () => {});
+    await act(async () => {});
+    expect(screen.getByText('PERFECT! 🏆')).toBeInTheDocument();
+  });
 });

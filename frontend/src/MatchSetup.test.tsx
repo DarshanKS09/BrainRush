@@ -9,7 +9,14 @@ vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>();
   return {
     ...actual,
-    api: { games: vi.fn(), start: vi.fn(), matchCreate: vi.fn(), matchJoinByCode: vi.fn() },
+    api: {
+      games: vi.fn(),
+      start: vi.fn(),
+      matchCreate: vi.fn(),
+      matchJoinByCode: vi.fn(),
+      matchInvites: vi.fn(),
+      matchMine: vi.fn(),
+    },
   };
 });
 
@@ -40,6 +47,8 @@ function catalog() {
 
 beforeEach(() => {
   mockedApi.games.mockResolvedValue(catalog());
+  mockedApi.matchInvites.mockResolvedValue({ items: [] });
+  mockedApi.matchMine.mockResolvedValue({ items: [] });
 });
 
 afterEach(() => {

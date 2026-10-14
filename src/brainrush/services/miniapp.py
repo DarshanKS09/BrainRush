@@ -509,9 +509,9 @@ class MiniappGameService:
             if state.game_type != GAME_TYPE_PERFECT_SECOND:
                 raise ValueError("this game uses its own stop endpoint")
             scored = perfect.score_result(target_ms=state.secret, actual_ms=actual)
-            return await self._complete_perfect(state, scored, actual_ms=actual)
+            return await self._complete_perfect(state, scored)
 
-    async def _complete_perfect(self, state, scored: dict, *, actual_ms: float):
+    async def _complete_perfect(self, state, scored: dict):
         from brainrush.services import utcnow as _utcnow
 
         moment = _utcnow()
@@ -520,7 +520,7 @@ class MiniappGameService:
             "game": GAME_TYPE_PERFECT_SECOND,
             "difficulty": state.difficulty,
             "target_ms": state.secret,
-            "actual_ms": float(actual_ms),
+            "actual_ms": scored["actual_ms"],
             "error_ms": scored["error_ms"],
             "error_percent": scored["error_percent"],
             "accuracy_percent": scored["accuracy_percent"],
