@@ -61,6 +61,14 @@ export function ColorPlayScreen({
   const viewRef = useRef<ColorState | null>(null);
   viewRef.current = view;
   const playedLevel = useRef<string>('');
+  const tapFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Tap acknowledgment timers must not outlive the component.
+  useEffect(() => {
+    return () => {
+      if (tapFlashTimer.current) clearTimeout(tapFlashTimer.current);
+    };
+  }, []);
 
   const load = useCallback(() => {
     setError('');
@@ -99,11 +107,14 @@ export function ColorPlayScreen({
     return () => clearTimeout(t);
   }, [transitionMs]);
 
-  // Play back the current level's prefix whenever a new level arrives,
-  // once the player has pressed Start and no transition is running.
+  // Play back the level's prefix when a new level arrives, once the
+  // player has pressed Start and no transition is running. The key tracks
+  // session + level only: mid-level taps must NOT replay (the server keeps
+  // advancing position, so a replay would invite repeating from the start
+  // and get a correct color rejected).
   useEffect(() => {
     if (!view || view.finished || !started || transitionMs !== null) return;
-    const key = `${view.session_id}:${view.level}:${view.moves.length}`;
+    const key = `${view.session_id}:${view.level}`;
     if (playedLevel.current === key) return;
     playedLevel.current = key;
     setShowing(true);
@@ -129,12 +140,17 @@ export function ColorPlayScreen({
       if (!current || current.finished || showing || busy || !started || transitionMs !== null) return;
       setBusy(true);
       setNotice('');
+      // Immediate acknowledgment so a tap never feels lost (which invites
+      // double-taps that would consume two positions). Playback never runs
+      // while input is unlocked, so this timer cannot fight it.
+      setFlash(color);
+      if (tapFlashTimer.current) clearTimeout(tapFlashTimer.current);
+      tapFlashTimer.current = setTimeout(() => setFlash(null), 180);
       try {
         const next = await api.move(ctx.initData, sessionId, color, newClientGuessId());
         setView(next);
         if (!next.finished && next.levels_completed > current.levels_completed) {
           // Round cleared: pause for the transition, then play the next level.
-          playedLevel.current = '';
           setTransitionMs(ROUND_TRANSITION_MS);
         }
         if (next.finished) haptic(next.result?.outcome === 'win' ? 'success' : 'error');
@@ -304,7 +320,9 @@ export function ColorPlayScreen({
           </div>
         ) : (
           <p className="text-xs uppercase tracking-widest text-slate-400" aria-live="polite">
-            {showing ? '👀 Watch carefully…' : `Your turn — repeat ${view.level} colors`}
+            {showing
+              ? '👀 Watch carefully…'
+              : `Your turn — tap ${view.position + 1} of ${view.level}`}
           </p>
         )}
         <div className="mt-2 flex justify-center gap-1.5" aria-label={`Level progress ${view.levels_completed} completed`}>
