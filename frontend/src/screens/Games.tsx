@@ -12,11 +12,13 @@ export function GamesScreen({
   onStart,
   onOpenMatch,
   onOpenMatches,
+  onSetupMatch,
 }: {
   ctx: WebAppContext;
   onStart: (gameId: string, sessionId: string) => void;
   onOpenMatch?: (matchId: string) => void;
   onOpenMatches?: () => void;
+  onSetupMatch?: () => void;
 }) {
   const [games, setGames] = useState<GameInfo[]>([]);
   const [error, setError] = useState('');
@@ -55,6 +57,17 @@ export function GamesScreen({
     <div className="space-y-3">
       <SectionTitle>Game lobby</SectionTitle>
       <button
+        onClick={() => (onSetupMatch ?? onOpenMatches ?? (() => {}))()}
+        className="w-full rounded-3xl bg-gradient-to-r from-amber-500 via-rose-500 to-neon-purple p-4 text-left shadow-glow active:scale-[0.99]"
+      >
+        <span className="flex items-center gap-2 text-lg font-black text-white">
+          <span aria-hidden>👥</span> Play With Friends
+        </span>
+        <span className="mt-0.5 block text-xs font-medium text-white/85">
+          Private room · pick a game &amp; mode · share a code or link
+        </span>
+      </button>
+      <button
         onClick={onOpenMatches ?? (() => {})}
         className="w-full rounded-2xl bg-gradient-to-r from-neon-purple/20 to-neon-cyan/20 px-3 py-2.5 text-left ring-1 ring-neon-cyan/30 active:scale-[0.99]"
       >
@@ -85,7 +98,7 @@ export function GamesScreen({
 
 function XpRulesLine({ game, difficulty }: { game: GameInfo; difficulty: string }) {
   const rules = game.xp_rules?.[difficulty] as
-    | { win_first_try?: number; win_last_try?: number; loss?: number; win?: number; loss_per_level?: number; win_bonus?: number; win_avg_ms?: number }
+    | { win_first_try?: number; win_last_try?: number; loss?: number; win?: number; loss_per_level?: number; win_bonus?: number; win_avg_ms?: number; perfect?: number; win_accuracy?: number }
     | undefined;
   if (!rules) return null;
   const text =
@@ -93,7 +106,9 @@ function XpRulesLine({ game, difficulty }: { game: GameInfo; difficulty: string 
       ? `Win: +${rules.win} XP · Each level: +${rules.loss_per_level} XP`
       : game.id === 'reflex_rush'
         ? `Fast taps earn more · Win bonus: +${rules.win_bonus} XP`
-        : `Win XP: ${rules.win_first_try} first try → ${rules.win_last_try} last try · Loss: +${rules.loss} XP`;
+        : game.id === 'perfect_second'
+          ? `Perfect stop: +${rules.perfect} XP · ${rules.win_accuracy}%+ accuracy wins`
+          : `Win XP: ${rules.win_first_try} first try → ${rules.win_last_try} last try · Loss: +${rules.loss} XP`;
   return <p className="mt-2 text-center text-xs text-slate-400">{text}</p>;
 }
 
@@ -139,7 +154,9 @@ function DifficultyModal({
             ? 'Memorize the flashing colors, then repeat them. Longer runs earn more XP.'
             : picked.id === 'reflex_rush'
               ? 'Wait for green, then tap fast. False starts score 0 for that round.'
-              : 'Pick your difficulty. Fewer attempts, more XP per win.'}
+              : picked.id === 'perfect_second'
+                ? 'Start the clock, then tap STOP exactly on the target. Closer stops earn up to 100 XP.'
+                : 'Pick your difficulty. Fewer attempts, more XP per win.'}
         </p>
         <div className="mt-3 grid grid-cols-3 gap-2">
           {picked.difficulties.map((d) => (

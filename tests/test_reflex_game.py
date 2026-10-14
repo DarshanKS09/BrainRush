@@ -364,6 +364,7 @@ async def test_reflex_get_state_and_cancel_and_dashboard():
         FakeResult(rows=[3]),  # best number win
         FakeResult(rows=[5]),  # best color
         FakeResult(rows=[900]),  # best reflex score (isolated per game_type)
+        FakeResult(rows=[]),  # best perfect error (none yet)
         FakeResult(rows=[0]),  # rank
         FakeResult(rows=[]),  # actives
     ])
@@ -399,7 +400,7 @@ def test_reflex_routes_and_catalog(monkeypatch):
             self.calls = []
             Stub.instance = self
 
-        async def start_game(self, *, user_id, difficulty="hard", game_type="number_guessing"):
+        async def start_game(self, *, user_id, difficulty="hard", game_type="number_guessing", match_id=None):
             self.calls.append(("start", game_type, difficulty))
             return {"session_id": "s1", "game_type": game_type, "finished": False}
 

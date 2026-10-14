@@ -221,6 +221,7 @@ async def test_dashboard_shape_uses_real_numbers():
             FakeResult(rows=[3]),  # best_win_score (number guessing)
             FakeResult(rows=[]),  # best color level (none yet)
             FakeResult(rows=[]),  # best reflex score (none yet)
+            FakeResult(rows=[]),  # best perfect error (none yet)
             FakeResult(rows=[2]),  # rank count -> rank 3
             FakeResult(rows=[]),  # active states
         ]
@@ -236,6 +237,7 @@ async def test_dashboard_shape_uses_real_numbers():
     assert dash["best_win_attempts"] == 3
     assert dash["best_color_level"] is None
     assert dash["best_reflex_score"] is None
+    assert dash["best_perfect_error_ms"] is None
     assert dash["rank"] == 3
     assert dash["active_games"] == []
 
@@ -255,6 +257,7 @@ async def test_dashboard_expires_stale_and_cleans_orphan_states():
             FakeResult(rows=[3]),  # best_win_score
             FakeResult(rows=[]),  # best color level
             FakeResult(rows=[]),  # best reflex score
+            FakeResult(rows=[]),  # best perfect error
             FakeResult(rows=[2]),  # rank count -> rank 3
             FakeResult(rows=[]),  # active states (stale ones gone)
         ]

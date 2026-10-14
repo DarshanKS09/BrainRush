@@ -28,26 +28,31 @@ from brainrush.db.repository import (
     DailyActivityRepository,
     GameResultRepository,
     GameSessionRepository,
+    MatchParticipantRepository,
+    MatchRepository,
     PlayerProfileRepository,
     UserRepository,
     WebappStateRepository,
 )
 from brainrush.game import number_guessing as guessing
 from brainrush.game import color_sequence as colors
+from brainrush.game import perfect_second as perfect
 from brainrush.game import reflex_rush as reflex
+from brainrush.game import multiplayer as mp
 from brainrush.game.progression import level_for_xp
 from brainrush.services import utcnow
 
 GAME_TYPE_NUMBER_GUESSING = "number_guessing"
 GAME_TYPE_COLOR_SEQUENCE = "color_sequence"
 GAME_TYPE_REFLEX_RUSH = "reflex_rush"
+GAME_TYPE_PERFECT_SECOND = perfect.GAME_TYPE
 
 # Sessions left `started` longer than this are dead (app closed, failed
 # submit, lobby exit without cancel): genuinely active games finish in
 # minutes, so a day is conservative. Expired rows keep their history.
 STALE_SESSION_TTL = timedelta(hours=24)
 
-PLAYABLE_GAME_TYPES = frozenset({GAME_TYPE_NUMBER_GUESSING, GAME_TYPE_COLOR_SEQUENCE, GAME_TYPE_REFLEX_RUSH})
+PLAYABLE_GAME_TYPES = frozenset({GAME_TYPE_NUMBER_GUESSING, GAME_TYPE_COLOR_SEQUENCE, GAME_TYPE_REFLEX_RUSH, GAME_TYPE_PERFECT_SECOND})
 
 DIFFICULTIES: dict[str, guessing.NumberGuessingConfig] = {
     "easy": guessing.NumberGuessingConfig(max_attempts=15),
@@ -94,6 +99,22 @@ CATALOG = [
                 "wait_max_ms": cfg.wait_max_ms,
             }
             for did, cfg in reflex.REFLEX_DIFFICULTIES.items()
+        ],
+    },
+    {
+        "id": "perfect_second",
+        "title": "Perfect Second",
+        "description": "Start the clock, then tap STOP exactly on the target time.",
+        "playable": True,
+        "difficulties": [
+            {
+                "id": did,
+                "max_attempts": 1,
+                "target_min_ms": cfg.min_target_ms,
+                "target_max_ms": cfg.max_target_ms,
+                "target_step_ms": cfg.step_ms,
+            }
+            for did, cfg in perfect.PERFECT_DIFFICULTIES.items()
         ],
     },
     {
@@ -210,12 +231,34 @@ def _reflex_public_view(state) -> dict:
     }
 
 
+def _perfect_public_view(state) -> dict:
+    """Public Perfect Second state: the target is VISIBLE by design.
+
+    The clock runs client-side from the player's own START tap; the server
+    only stores the target (in `secret`) and scores the submitted stop time.
+    """
+    return {
+        "session_id": str(state.session_id),
+        "game_type": state.game_type,
+        "difficulty": state.difficulty,
+        "target_ms": state.secret,
+        "max_attempts": 1,
+        "attempts_used": 0,
+        "attempts_left": 1,
+        "status": "started",
+        "finished": False,
+        "result": None,
+    }
+
+
 def _active_view(state) -> dict:
     """Public view for a resumed game, dispatched by game type."""
     if state.game_type == GAME_TYPE_COLOR_SEQUENCE:
         return _color_public_view(state, dict(state.guesses or {}))
     if state.game_type == GAME_TYPE_REFLEX_RUSH:
         return _reflex_public_view(state)
+    if state.game_type == GAME_TYPE_PERFECT_SECOND:
+        return _perfect_public_view(state)
     return _public_view(state, list(state.guesses or []))
 
 
@@ -256,6 +299,13 @@ def _completed_view(session_row: GameSession, result_row, guesses: list[dict]) -
             "false_starts": meta.get("false_starts", 0),
             "rounds": rendered,
         })
+    if meta.get("game") == GAME_TYPE_PERFECT_SECOND:
+        result.update({
+            "target_ms": meta.get("target_ms"),
+            "actual_ms": meta.get("actual_ms"),
+            "error_ms": meta.get("error_ms"),
+            "accuracy_percent": meta.get("accuracy_percent"),
+        })
     return {
         "session_id": str(session_row.id),
         "game_type": meta.get("game", GAME_TYPE_NUMBER_GUESSING),
@@ -294,8 +344,17 @@ class MiniappGameService:
     async def start_game(
         self, *, user_id: uuid.UUID, difficulty: str = "hard",
         game_type: str = GAME_TYPE_NUMBER_GUESSING,
+        match_id: uuid.UUID | None = None,
     ) -> dict:
-        """Abandon leftover webapp games, then start fresh. Returns public view."""
+        """Abandon leftover webapp games, then start fresh. Returns public view.
+
+        `match_id` links the attempt to an active multiplayer match: the
+        caller must be a participant and the game/difficulty must equal the
+        match's, so a smuggled difficulty or foreign match can never mint a
+        favorable session. Games whose multiplayer spec defines a shared
+        target (Perfect Second) resolve it deterministically from the match
+        instead of rolling a fresh one.
+        """
         if game_type not in PLAYABLE_GAME_TYPES:
             raise ValueError(f"game_type must be one of {sorted(PLAYABLE_GAME_TYPES)}")
         if game_type == GAME_TYPE_COLOR_SEQUENCE:
@@ -308,12 +367,23 @@ class MiniappGameService:
                 raise ValueError(
                     f"difficulty must be one of {sorted(reflex.REFLEX_DIFFICULTIES)}"
                 )
+        elif game_type == GAME_TYPE_PERFECT_SECOND:
+            if difficulty not in perfect.PERFECT_DIFFICULTIES:
+                raise ValueError(
+                    f"difficulty must be one of {sorted(perfect.PERFECT_DIFFICULTIES)}"
+                )
         else:
             _config_for(difficulty)  # fail fast, before any DB work
         async with self.session.begin():
             await self._expire_stale_locked(user_id=user_id)
             if await self.users.get_by_id(user_id) is None:
                 raise NotFoundError("user not found")
+            target_override: int | None = None
+            if match_id is not None:
+                target_override = await self._match_target_for(
+                    user_id=user_id, match_id=match_id,
+                    game_type=game_type, difficulty=difficulty,
+                )
             for state, _ in await self.states.list_active_by_user(user_id=user_id):
                 await self.sessions.abandon(session_id=state.session_id, ended_at=utcnow())
                 await self.states.delete(state)
@@ -327,6 +397,11 @@ class MiniappGameService:
             if game_type == GAME_TYPE_REFLEX_RUSH:
                 return await self._start_reflex(
                     user_id=user_id, db_row=db_row, difficulty=difficulty
+                )
+            if game_type == GAME_TYPE_PERFECT_SECOND:
+                return await self._start_perfect(
+                    user_id=user_id, db_row=db_row, difficulty=difficulty,
+                    target_ms=target_override,
                 )
             config = _config_for(difficulty)
             secret = guessing.roll_secret(config)
@@ -361,6 +436,123 @@ class MiniappGameService:
         state.guesses = data
         await self.session.flush()
         return _color_public_view(state, data)
+
+    async def _match_target_for(
+        self, *, user_id, match_id, game_type: str, difficulty: str
+    ) -> int | None:
+        """Shared multiplayer target for this attempt, or None.
+
+        Call inside an open transaction. The match must be active, the
+        caller a participant, and the requested game/difficulty must equal
+        the match's own — otherwise the session could smuggle a different
+        target or difficulty into a match seat.
+        """
+        matches = MatchRepository(self.session)
+        parts = MatchParticipantRepository(self.session)
+        match = await matches.get_by_id(match_id)
+        if match is None:
+            raise NotFoundError("match not found")
+        if match.status != "active":
+            raise ConflictError("match has not started")
+        if await parts.get(match_id=match.id, user_id=user_id) is None:
+            raise NotFoundError("match not found")
+        if match.game_type != game_type or match.difficulty != difficulty:
+            raise ValueError("session must use the match's game and difficulty")
+        return mp.spec_for(game_type).shared_target_ms(
+            match_id=match.id, difficulty=match.difficulty
+        )
+
+    async def _start_perfect(
+        self, *, user_id, db_row, difficulty: str, target_ms: int | None = None,
+    ) -> dict:
+        config = perfect.PERFECT_DIFFICULTIES[difficulty]
+        target = target_ms if target_ms is not None else perfect.roll_target_ms(config)
+        # The target lives in `secret` (NOT NULL int, exact ms). It is
+        # public by design: the player must see it during the attempt.
+        state = await self.states.create(
+            user_id=user_id,
+            session_id=db_row.id,
+            game_type=GAME_TYPE_PERFECT_SECOND,
+            difficulty=difficulty,
+            secret=target,
+            max_attempts=1,
+        )
+        return _perfect_public_view(state)
+
+    async def stop_perfect(
+        self,
+        *,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID,
+        actual_ms,
+        client_submission_id: str,
+    ) -> dict:
+        """Submit the single STOP time for a Perfect Second attempt.
+
+        Error and XP are computed server-side from the stored target and
+        the validated submission; client values are never trusted for XP.
+        Replays (same or retried submission after completion) return the
+        stored completed view without awarding XP twice: the state row is
+        deleted in the same transaction as the result.
+        """
+        if (not isinstance(client_submission_id, str)
+                or not client_submission_id.strip()):
+            raise ValueError("client_submission_id must be a non-empty string")
+        try:
+            actual = perfect.parse_actual_ms(actual_ms)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from None
+        async with self.session.begin():
+            state = await self.states.get_for_update(session_id=session_id)
+            if state is None or state.user_id != user_id:
+                return await self._replay_or_missing(session_id, user_id)
+            if state.game_type != GAME_TYPE_PERFECT_SECOND:
+                raise ValueError("this game uses its own stop endpoint")
+            scored = perfect.score_result(target_ms=state.secret, actual_ms=actual)
+            return await self._complete_perfect(state, scored, actual_ms=actual)
+
+    async def _complete_perfect(self, state, scored: dict, *, actual_ms: float):
+        from brainrush.services import utcnow as _utcnow
+
+        moment = _utcnow()
+        won = bool(scored["won"])
+        metadata = {
+            "game": GAME_TYPE_PERFECT_SECOND,
+            "difficulty": state.difficulty,
+            "target_ms": state.secret,
+            "actual_ms": float(actual_ms),
+            "error_ms": scored["error_ms"],
+            "error_percent": scored["error_percent"],
+            "accuracy_percent": scored["accuracy_percent"],
+        }
+        session_row = await self.sessions.finish(
+            session_id=state.session_id,
+            status="completed",
+            score=scored["score_ms"],
+            ended_at=moment,
+            duration_seconds=None,
+        )
+        result_row = await self.results.record(
+            session_id=state.session_id,
+            score=scored["score_ms"],
+            outcome="win" if won else "loss",
+            xp_earned=scored["xp"],
+            metadata=metadata,
+        )
+        profile = await self.profiles.record_game(
+            user_id=state.user_id,
+            xp_earned=scored["xp"],
+            won=won,
+            new_level=None,
+        )
+        await self.profiles.set_level(
+            user_id=state.user_id, level=level_for_xp(profile.total_xp)
+        )
+        await self.activities.add_play(
+            user_id=state.user_id, day=moment.date(), xp_earned=scored["xp"]
+        )
+        await self.states.delete(state)
+        return _completed_view(session_row, result_row, [])
 
     async def _start_reflex(self, *, user_id, db_row, difficulty: str) -> dict:
         try:
@@ -707,6 +899,8 @@ class MiniappGameService:
                     return _color_public_view(state, dict(state.guesses or {}))
                 if state.game_type == GAME_TYPE_REFLEX_RUSH:
                     return _reflex_public_view(state)
+                if state.game_type == GAME_TYPE_PERFECT_SECOND:
+                    return _perfect_public_view(state)
                 return _public_view(state, list(state.guesses or []))
             return await self._replay_or_missing(session_id, user_id)
 
@@ -755,6 +949,9 @@ class MiniappGameService:
             best_reflex = await self.results.best_score_for_game(
                 user_id=user_id, game_type=GAME_TYPE_REFLEX_RUSH
             )
+            best_perfect = await self.results.best_win_score(
+                user_id=user_id, game_type=GAME_TYPE_PERFECT_SECOND
+            )
             rank = await self.profiles.rank_by_xp(total_xp=profile.total_xp)
             actives = await self.states.list_active_by_user(user_id=user_id)
             progress = progress_for_xp(profile.total_xp)
@@ -782,6 +979,7 @@ class MiniappGameService:
                 "best_win_attempts": best,
                 "best_color_level": best_color,
                 "best_reflex_score": best_reflex,
+                "best_perfect_error_ms": best_perfect,
                 "rank": rank,
                 "active_games": [
                     _active_view(state) for state, _ in actives

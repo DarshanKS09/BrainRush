@@ -19,11 +19,12 @@ export interface DashboardData {
   best_win_attempts: number | null;
   best_color_level: number | null;
   best_reflex_score?: number | null;
+  best_perfect_error_ms?: number | null;
   rank: number;
   active_games: ActiveGame[];
 }
 
-export type ActiveGame = GameState | ColorState | ReflexState;
+export type ActiveGame = GameState | ColorState | ReflexState | PerfectState;
 
 export interface DifficultyInfo {
   id: string;
@@ -32,6 +33,9 @@ export interface DifficultyInfo {
   playback_ms?: number;
   wait_min_ms?: number;
   wait_max_ms?: number;
+  target_min_ms?: number;
+  target_max_ms?: number;
+  target_step_ms?: number;
 }
 
 export interface GameXpRules {
@@ -56,6 +60,7 @@ export interface GameInfo {
   playable: boolean;
   difficulties: DifficultyInfo[];
   xp_rules?: Record<string, GameXpRules>;
+  multiplayer?: { modes: string[] } | null;
 }
 
 export interface GuessEntry {
@@ -147,6 +152,30 @@ export interface ReflexState {
   result: ReflexResult | null;
 }
 
+export interface PerfectResult {
+  outcome: 'win' | 'loss';
+  score: number;
+  xp_earned: number;
+  secret: number | null;
+  target_ms: number;
+  actual_ms: number;
+  error_ms: number;
+  accuracy_percent: number;
+}
+
+export interface PerfectState {
+  session_id: string;
+  game_type: string;
+  difficulty: string;
+  target_ms: number;
+  max_attempts: number;
+  attempts_used: number;
+  attempts_left: number;
+  status: string;
+  finished: boolean;
+  result: PerfectResult | null;
+}
+
 export interface ReferralLink {
   code: string;
   link: string | null;
@@ -209,6 +238,8 @@ export interface MatchView {
   count: number;
   min_players: number;
   max_players: number;
+  room_code: string;
+  target_ms?: number | null;
   token_expires_at: string | null;
   created_at: string | null;
   started_at: string | null;
@@ -327,10 +358,14 @@ export const SUBMIT_TIMEOUT_MS = 25000;
 export const api = {
   me: (initData: string) => request<DashboardData>('/api/me', initData),
   games: (initData: string) => request<{ games: GameInfo[] }>('/api/games', initData),
-  start: (initData: string, gameId: string, difficulty: string) =>
-    request<GameState | ColorState | ReflexState>('/api/sessions', initData, {
+  start: (initData: string, gameId: string, difficulty: string, matchId?: string | null) =>
+    request<GameState | ColorState | ReflexState | PerfectState>('/api/sessions', initData, {
       method: 'POST',
-      body: JSON.stringify({ game_type: gameId, difficulty }),
+      // match_id is omitted for plain solo starts (unchanged request shape);
+      // match-linked starts carry it so the server can resolve shared targets.
+      body: JSON.stringify(matchId
+        ? { game_type: gameId, difficulty, match_id: matchId }
+        : { game_type: gameId, difficulty }),
     }),
   state: (initData: string, sessionId: string) =>
     request<GameState>(`/api/sessions/${sessionId}`, initData),
@@ -353,6 +388,13 @@ export const api = {
     }, SUBMIT_TIMEOUT_MS),
   reflexState: (initData: string, sessionId: string) =>
     request<ReflexState>(`/api/sessions/${sessionId}`, initData),
+  perfectState: (initData: string, sessionId: string) =>
+    request<PerfectState>(`/api/sessions/${sessionId}`, initData),
+  stopPerfect: (initData: string, sessionId: string, actualMs: number, clientSubmissionId: string) =>
+    request<PerfectState>(`/api/sessions/${sessionId}/stop`, initData, {
+      method: 'POST',
+      body: JSON.stringify({ actual_ms: actualMs, client_submission_id: clientSubmissionId }),
+    }, SUBMIT_TIMEOUT_MS),
   cancel: (initData: string, sessionId: string) =>
     request<{ session_id: string; status: string }>(`/api/sessions/${sessionId}`, initData, {
       method: 'DELETE',
@@ -397,6 +439,11 @@ export const api = {
     request<MatchView>('/api/matches/join', initData, {
       method: 'POST',
       body: JSON.stringify({ token }),
+    }),
+  matchJoinByCode: (initData: string, code: string) =>
+    request<MatchView>('/api/matches/join-by-code', initData, {
+      method: 'POST',
+      body: JSON.stringify({ code }),
     }),
   matchJoin: (initData: string, matchId: string) =>
     request<MatchView>(`/api/matches/${matchId}/join`, initData, { method: 'POST' }),

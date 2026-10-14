@@ -9,6 +9,7 @@ const PAGE = 20;
 function scoreText(h: HistoryItem): string {
   if (h.game_type === 'color_sequence') return `Lv ${h.score}`;
   if (h.game_type === 'reflex_rush') return `${h.score} pts`;
+  if (h.game_type === 'perfect_second') return `${(h.score / 1000).toFixed(2)}s err`;
   return `${h.score} tries`;
 }
 

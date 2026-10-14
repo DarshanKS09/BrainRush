@@ -12,8 +12,11 @@ create (lobby) → join (lobby) → host starts (active) → each player plays s
 ```
 
 - **Lobby**: host seated immediately. Joins via share-link token (`POST
-  /api/matches/join`) or known id (`POST /api/matches/{id}/join`). Both are
-  idempotent — repeat joins return the current view.
+  /api/matches/join`), human-readable room code (`POST
+  /api/matches/join-by-code`), or known id (`POST /api/matches/{id}/join`).
+  All three are idempotent — repeat joins return the current view. Room codes
+  are manual-entry conveniences, never authorization secrets (identity always
+  comes from verified `initData`); only share-link tokens go into URLs.
 - **Start**: host-only, needs minimum seats (duel 2, ffa 3, tournament 5).
   Server timestamps are authoritative (`started_at`, `deadline`).
 - **Play**: `MatchDetail → Play my round` starts a normal solo session at the
@@ -57,6 +60,7 @@ cannot be left formally — the seat simply counts as abandoned.
 | Number Guessing | attempts used | no (fewer tries) | earlier finish; private guesses never exposed |
 | Color Sequence | levels completed | yes | earlier finish |
 | Reflex Rush | points | yes | lower `avg_ms`, then earlier finish |
+| Perfect Second | timing error (ms) | no (smaller error) | exact measured error, then earlier finish |
 
 `rank_participants` sorts by (score direction, tie-break, user id) and assigns
 **dense ranks** — equal keys share a rank; a remaining tie is never broken
@@ -116,6 +120,25 @@ arbitrarily.
    outcomes), then map the outcome to `score`.
 4. Inherited automatically: lobbies, invitations, share links, sync,
    validation, ranking, rewards, history, rematch, and cleanup.
+
+## Shared round targets (Perfect Second)
+
+Games whose round must be identical for every seat override
+`MultiplayerSpec.shared_target_ms(match_id, difficulty)` with a
+deterministic derivation (Perfect Second: `SHA-256(game, match id,
+difficulty)` mapped onto the difficulty's target grid). The flow reuses
+existing infrastructure — no duplicate match backend:
+
+- Solo start accepts optional `match_id` (`POST /api/sessions`). The server
+  requires an active match, caller membership, and equal game/difficulty,
+  then resolves the shared target instead of rolling a fresh one.
+- Match views expose the public `target_ms` (it is visible during attempts
+  by design).
+- Match submit rejects sessions whose stored target differs from the
+  match's (`409`), so a foreign solo attempt can never score a seat.
+- Timing fairness mirrors Reflex Rush: each player runs their own
+  monotonic clock; the server validates bounds + target + membership +
+  one-submit-per-seat, and the match deadline bounds the round.
 
 ## Configuration
 

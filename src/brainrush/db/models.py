@@ -304,6 +304,7 @@ class Match(Base):
     max_players: Mapped[int] = mapped_column(Integer, nullable=False)
     min_players: Mapped[int] = mapped_column(Integer, nullable=False)
     invite_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    room_code: Mapped[str] = mapped_column(String(12), unique=True, nullable=False)
     token_expires_at: Mapped[datetime] = mapped_column(_tz_now(), nullable=False)
     difficulty: Mapped[str] = mapped_column(String(16), default="hard", nullable=False)
     settings: Mapped[dict] = mapped_column("settings", JSONB, default=dict, nullable=False)

@@ -24,6 +24,7 @@ from brainrush.services.miniapp import (
 )
 from brainrush.game import color_sequence as color_game
 from brainrush.game import number_guessing as guessing
+from brainrush.game import perfect_second as perfect_game
 from brainrush.game import reflex_rush as reflex_game
 
 router = APIRouter(prefix="/api")
@@ -32,6 +33,7 @@ router = APIRouter(prefix="/api")
 class StartRequest(BaseModel):
     game_type: str = "number_guessing"
     difficulty: str = "hard"
+    match_id: uuid.UUID | None = None
 
 
 class GuessRequest(BaseModel):
@@ -51,6 +53,11 @@ class ReflexRound(BaseModel):
 
 class ReflexFinishRequest(BaseModel):
     rounds: list[ReflexRound] = Field(min_length=5, max_length=5)
+    client_submission_id: str = Field(min_length=1, max_length=64)
+
+
+class PerfectStopRequest(BaseModel):
+    actual_ms: float
     client_submission_id: str = Field(min_length=1, max_length=64)
 
 
@@ -89,9 +96,16 @@ async def dashboard(identity: IdentityDep, session: SessionDep) -> dict:
 
 @router.get("/games")
 async def games() -> dict:
+    from brainrush.game import multiplayer as mp_game
+
     catalog = []
     for entry in CATALOG:
         item = dict(entry)
+        try:
+            spec = mp_game.spec_for(entry["id"])
+            item["multiplayer"] = {"modes": sorted(spec.modes)}
+        except ValueError:
+            item["multiplayer"] = None
         if entry["id"] == "number_guessing":
             item["xp_rules"] = {
                 did: {
@@ -116,6 +130,18 @@ async def games() -> dict:
                     "loss_per_level": cfg.xp_per_level,
                 }
                 for did, cfg in color_game.COLOR_DIFFICULTIES.items()
+            }
+        elif entry["id"] == "perfect_second":
+            item["xp_rules"] = {
+                did: {
+                    "perfect": 100,
+                    "win_accuracy": 90,
+                    "win_error_percent": perfect_game.WIN_ERROR_PERCENT,
+                    "target_min_ms": cfg.min_target_ms,
+                    "target_max_ms": cfg.max_target_ms,
+                    "target_step_ms": cfg.step_ms,
+                }
+                for did, cfg in perfect_game.PERFECT_DIFFICULTIES.items()
             }
         elif entry["id"] == "reflex_rush":
             item["xp_rules"] = {
@@ -144,7 +170,7 @@ async def start_session(
         raise HTTPException(status_code=400, detail="game is not playable yet")
     return await _service(session).start_game(
         user_id=identity["user_id"], difficulty=body.difficulty,
-        game_type=body.game_type,
+        game_type=body.game_type, match_id=body.match_id,
     )
 
 
@@ -207,6 +233,24 @@ async def finish_reflex(
         session_id=session_id,
         user_id=identity["user_id"],
         rounds=[r.model_dump() for r in body.rounds],
+        client_submission_id=body.client_submission_id,
+    )
+
+
+@router.post("/sessions/{session_id}/stop")
+async def stop_perfect(
+    session_id: uuid.UUID,
+    body: PerfectStopRequest,
+    identity: IdentityDep,
+    session: SessionDep,
+) -> dict:
+    """Submit the single STOP time for Perfect Second. Error and XP are
+    computed server-side from the stored target; the submission carries
+    only the measured elapsed time plus an idempotency key."""
+    return await _service(session).stop_perfect(
+        session_id=session_id,
+        user_id=identity["user_id"],
+        actual_ms=body.actual_ms,
         client_submission_id=body.client_submission_id,
     )
 
@@ -301,6 +345,10 @@ class MatchCreateRequest(BaseModel):
 
 class MatchJoinTokenRequest(BaseModel):
     token: str = Field(min_length=1, max_length=64)
+
+
+class MatchJoinCodeRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=12)
 
 
 class MatchInviteRequest(BaseModel):
@@ -408,6 +456,20 @@ async def match_join_by_token(
     settings: Settings = request.app.state.settings
     return await _matches(session, settings).join_by_token(
         user_id=identity["user_id"], token=body.token
+    )
+
+
+@router.post("/matches/join-by-code")
+async def match_join_by_code(
+    body: MatchJoinCodeRequest, request: Request,
+    identity: IdentityDep, session: SessionDep,
+) -> dict:
+    """Join via the human-readable room code (manual entry). The code is not
+    an authorization secret: identity comes from verified initData.
+    Idempotent: repeat joins return the lobby."""
+    settings: Settings = request.app.state.settings
+    return await _matches(session, settings).join_by_code(
+        user_id=identity["user_id"], room_code=body.code
     )
 
 

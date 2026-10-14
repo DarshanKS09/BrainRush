@@ -7,11 +7,13 @@ import { GamesScreen } from './screens/Games';
 import { PlayScreen } from './screens/Play';
 import { ColorPlayScreen } from './screens/ColorPlay';
 import { ReflexPlayScreen } from './screens/ReflexPlay';
+import { PerfectPlayScreen } from './screens/PerfectPlay';
 import { LeaderboardScreen } from './screens/Leaderboard';
 import { ProfileScreen } from './screens/Profile';
 import { HistoryScreen } from './screens/History';
 import { MatchesScreen } from './screens/Matches';
 import { MatchDetailScreen } from './screens/MatchDetail';
+import { MatchSetupScreen } from './screens/MatchSetup';
 
 type Route =
   | { name: Exclude<Tab, 'play'> }
@@ -19,6 +21,7 @@ type Route =
   | { name: 'play-match'; matchId: string; sessionId: string; gameId: string }
   | { name: 'matches' }
   | { name: 'match'; matchId: string }
+  | { name: 'setup-match' }
   | { name: 'history' };
 
 const PENDING_REFERRAL_KEY = 'brainrush:pendingReferral';
@@ -162,7 +165,7 @@ export default function App() {
   }, [ctx.initData, matchToken, matchJoined, claimDone]);
 
   const tab: Tab =
-    route.name === 'play' || route.name === 'play-match' || route.name === 'matches' || route.name === 'match'
+    route.name === 'play' || route.name === 'play-match' || route.name === 'matches' || route.name === 'match' || route.name === 'setup-match'
       ? 'games'
       : route.name === 'history'
         ? 'profile'
@@ -275,6 +278,14 @@ export default function App() {
             onStart={(gameId, sessionId) => setRoute({ name: 'play', gameId, sessionId })}
             onOpenMatch={(matchId) => setRoute({ name: 'match', matchId })}
             onOpenMatches={() => setRoute({ name: 'matches' })}
+            onSetupMatch={() => setRoute({ name: 'setup-match' })}
+          />
+        )}
+        {route.name === 'setup-match' && (
+          <MatchSetupScreen
+            ctx={ctx}
+            onOpenMatch={(matchId) => setRoute({ name: 'match', matchId })}
+            onBack={() => setRoute({ name: 'games' })}
           />
         )}
         {route.name === 'matches' && (
@@ -287,7 +298,7 @@ export default function App() {
             onExit={() => setRoute({ name: 'matches' })}
             onPlay={(gameId, difficulty, mId) => {
               api
-                .start(ctx.initData, gameId, difficulty)
+                .start(ctx.initData, gameId, difficulty, mId)
                 .then((s) => setRoute({ name: 'play-match', matchId: mId, sessionId: s.session_id, gameId }))
                 .catch((e: Error) => setMatchNotice(e.message));
             }}
@@ -314,7 +325,18 @@ export default function App() {
             onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'reflex_rush', sessionId })}
           />
         )}
-        {route.name === 'play-match' && route.gameId !== 'color_sequence' && route.gameId !== 'reflex_rush' && (
+        {route.name === 'play-match' && route.gameId === 'perfect_second' && (
+          <PerfectPlayScreen
+            key={route.sessionId}
+            ctx={ctx}
+            sessionId={route.sessionId}
+            matchId={route.matchId}
+            onBackToMatch={() => setRoute({ name: 'match', matchId: route.matchId })}
+            onExit={() => setRoute({ name: 'match', matchId: route.matchId })}
+            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'perfect_second', sessionId })}
+          />
+        )}
+        {route.name === 'play-match' && route.gameId !== 'color_sequence' && route.gameId !== 'reflex_rush' && route.gameId !== 'perfect_second' && (
           <PlayScreen
             ctx={ctx}
             sessionId={route.sessionId}
@@ -341,7 +363,16 @@ export default function App() {
             onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'reflex_rush', sessionId })}
           />
         )}
-        {route.name === 'play' && route.gameId !== 'color_sequence' && route.gameId !== 'reflex_rush' && (
+        {route.name === 'play' && route.gameId === 'perfect_second' && (
+          <PerfectPlayScreen
+            key={route.sessionId}
+            ctx={ctx}
+            sessionId={route.sessionId}
+            onExit={() => setRoute({ name: 'games' })}
+            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'perfect_second', sessionId })}
+          />
+        )}
+        {route.name === 'play' && route.gameId !== 'color_sequence' && route.gameId !== 'reflex_rush' && route.gameId !== 'perfect_second' && (
           <PlayScreen
             ctx={ctx}
             sessionId={route.sessionId}

@@ -5,6 +5,7 @@ const ART: Record<string, { icon: string; gradient: string }> = {
   number_guessing: { icon: '🔢', gradient: 'from-violet-600 to-cyan-500' },
   color_sequence: { icon: '🎨', gradient: 'from-pink-500 to-amber-400' },
   reflex_rush: { icon: '👆', gradient: 'from-amber-500 to-rose-500' },
+  perfect_second: { icon: '⏱️', gradient: 'from-cyan-500 to-emerald-500' },
   memory_match: { icon: '🃏', gradient: 'from-fuchsia-600 to-purple-500' },
   reaction_test: { icon: '⚡', gradient: 'from-amber-500 to-rose-500' },
   math_challenge: { icon: '➗', gradient: 'from-emerald-500 to-cyan-500' },

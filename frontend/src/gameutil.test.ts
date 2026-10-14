@@ -5,9 +5,11 @@ import {
   difficultyLabel,
   difficultySub,
   formatDate,
+  formatSeconds,
   gameTitle,
   keypadReducer,
   outcomeLabel,
+  perfectVerdict,
   reflexWaitText,
   resumeHint,
   sessionStatusLabel,
@@ -80,5 +82,38 @@ describe('keypadReducer', () => {
     expect(keypadReducer('42', 'back')).toBe('4');
     expect(keypadReducer('42', 'clear')).toBe('');
     expect(keypadReducer('4', 'x')).toBe('4');
+  });
+});
+
+describe('perfectSecond', () => {
+  it('titles the game and summarizes target ranges per difficulty', () => {
+    expect(gameTitle('perfect_second')).toBe('Perfect Second');
+    expect(difficultySub('perfect_second', { id: 'easy', max_attempts: 1, target_min_ms: 3000, target_max_ms: 15000, target_step_ms: 1000 }))
+      .toBe('Targets 3–15 s · 1 s steps');
+    expect(difficultySub('perfect_second', { id: 'medium', max_attempts: 1, target_min_ms: 3000, target_max_ms: 12000, target_step_ms: 500 }))
+      .toBe('Targets 3–12 s · 500 ms steps');
+    expect(difficultySub('perfect_second', { id: 'hard', max_attempts: 1, target_min_ms: 2000, target_max_ms: 10000, target_step_ms: 10 }))
+      .toBe('Targets 2–10 s · 10 ms steps');
+    expect(resumeHint({ game_type: 'perfect_second', target_ms: 5500, difficulty: 'medium' }))
+      .toBe('🎯 5.5 s');
+  });
+
+  it('formats times per difficulty precision', () => {
+    expect(formatSeconds(7000, 'easy')).toBe('7 s');
+    expect(formatSeconds(5500, 'medium')).toBe('5.5 s');
+    expect(formatSeconds(5000, 'medium')).toBe('5 s');
+    expect(formatSeconds(5340, 'hard')).toBe('5.34 s');
+    expect(formatSeconds(5500, 'hard')).toBe('5.50 s');
+    expect(formatSeconds(5500, 'unknown')).toBe('5.50 s');
+  });
+
+  it('tiers verdicts by accuracy', () => {
+    expect(perfectVerdict(100)).toBe('PERFECT! 🏆');
+    expect(perfectVerdict(90)).toBe('Incredible! ⚡');
+    expect(perfectVerdict(70)).toBe('Great timing! 🎯');
+    expect(perfectVerdict(50)).toBe('Good effort! 👍');
+    expect(perfectVerdict(25)).toBe('Close — keep practicing! 🙂');
+    expect(perfectVerdict(1)).toBe('Way off! 😅');
+    expect(perfectVerdict(0)).toBe('Missed it! 💪');
   });
 });

@@ -3,6 +3,7 @@ import { api, type MatchInviteItem, type MatchListItem } from '../api';
 import { formatDate, gameTitle } from '../gameutil';
 import type { WebAppContext } from '../telegram';
 import { ErrorNotice, Loading, SectionTitle } from '../components/ui';
+import { JoinByCode } from './MatchSetup';
 
 const MODES = [
   { id: 'duel', label: '1v1 Duel', hint: 'Exactly 2 players' },
@@ -55,6 +56,7 @@ export function MatchesScreen({
 
   return (
     <div className="space-y-4">
+      <JoinByCode ctx={ctx} onJoined={onOpen} />
       <SectionTitle>Match invitations</SectionTitle>
       {invites.length === 0 ? (
         <p className="rounded-2xl bg-panel p-3 text-sm text-slate-400">No pending invitations.</p>

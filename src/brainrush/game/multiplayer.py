@@ -12,6 +12,11 @@ To add a game (Crash Predictor is the worked example in docs/MULTIPLAYER.md):
      finish flow; the match layer only links finished solo sessions.
   3. Nothing else: invites, lobby, sync, ranking, rewards, and history are
      inherited automatically.
+
+Games with a shared round target (Perfect Second) additionally override
+`shared_target_ms`: every seat resolves the same target deterministically
+from the match id, and both the solo start (match-linked) and the match
+submit validate against it.
 """
 from __future__ import annotations
 
@@ -42,6 +47,15 @@ class MultiplayerSpec:
         is applied by rank_participants. Must be total and deterministic."""
         raise NotImplementedError
 
+    def shared_target_ms(self, *, match_id: uuid.UUID, difficulty: str) -> int | None:
+        """Shared round target for one match, or None.
+
+        Games whose round must be identical for every seat (Perfect Second)
+        override this with a deterministic derivation from the match id.
+        Games with independent per-player content return None.
+        """
+        return None
+
 
 @dataclass(frozen=True)
 class _NumberGuessingSpec(MultiplayerSpec):
@@ -70,6 +84,22 @@ class _ReflexRushSpec(MultiplayerSpec):
         return (avg_key, ended)
 
 
+@dataclass(frozen=True)
+class _PerfectSecondSpec(MultiplayerSpec):
+    def tiebreak_key(self, *, metadata: dict, ended_at: datetime | None) -> tuple:
+        # Smallest absolute error wins (primary score is the rounded error).
+        # The exact measured error breaks rounded ties, then finish time.
+        err = metadata.get("error_ms")
+        err_key = err if isinstance(err, (int, float)) else 10**12
+        ended = ended_at.isoformat() if ended_at is not None else ""
+        return (err_key, ended)
+
+    def shared_target_ms(self, *, match_id: uuid.UUID, difficulty: str) -> int | None:
+        from brainrush.game import perfect_second as perfect
+
+        return perfect.match_target_ms(match_id, difficulty)
+
+
 REGISTRY: dict[str, MultiplayerSpec] = {
     "number_guessing": _NumberGuessingSpec(
         game_type="number_guessing",
@@ -88,6 +118,12 @@ REGISTRY: dict[str, MultiplayerSpec] = {
         modes=frozenset({"duel", "ffa", "tournament"}),
         higher_is_better=True,
         match_minutes=45,
+    ),
+    "perfect_second": _PerfectSecondSpec(
+        game_type="perfect_second",
+        modes=frozenset({"duel", "ffa", "tournament"}),
+        higher_is_better=False,
+        match_minutes=30,
     ),
 }
 

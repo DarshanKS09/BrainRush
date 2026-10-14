@@ -6,7 +6,7 @@ import {
   type MatchResultView,
   type MatchView,
 } from '../api';
-import { formatDate, gameTitle } from '../gameutil';
+import { formatDate, formatSeconds, gameTitle } from '../gameutil';
 import type { WebAppContext } from '../telegram';
 import { ErrorNotice, Loading, SectionTitle } from '../components/ui';
 import { haptic } from '../telegram';
@@ -17,6 +17,7 @@ function scoreText(gameType: string, score: number | null): string {
   if (score === null || score === undefined) return '—';
   if (gameType === 'color_sequence') return `Lv ${score}`;
   if (gameType === 'reflex_rush') return `${score} pts`;
+  if (gameType === 'perfect_second') return `${(score / 1000).toFixed(2)}s err`;
   return `${score} tries`;
 }
 
@@ -184,6 +185,7 @@ export function MatchDetailScreen({
         </h2>
         <p className="text-xs text-slate-400">
           {view.difficulty} · {view.count} player{view.count === 1 ? '' : 's'}
+          {'target_ms' in view && view.target_ms != null ? ` · 🎯 ${formatSeconds(view.target_ms, view.difficulty)}` : ''}
           {finished ? ` · finished ${formatDate(view.finished_at)}` : secsLeft !== null ? ` · ends in ${Math.floor(secsLeft / 60)}m ${secsLeft % 60}s` : ''}
         </p>
         {notice && <p className="mt-2 text-sm text-amber-300" role="alert">{notice}</p>}
@@ -210,6 +212,22 @@ export function MatchDetailScreen({
           <p className="text-xs text-slate-400">
             Waiting for players… need at least {live.min_players} to start.
           </p>
+          {live.room_code && (
+            <div className="mt-2 flex items-center justify-between gap-2 rounded-xl bg-navy px-3 py-2">
+              <span className="text-xs text-slate-400">
+                Room code{' '}
+                <b className="font-mono text-base font-bold tracking-[0.25em] text-white">
+                  {live.room_code}
+                </b>
+              </span>
+              <button
+                onClick={() => void (async () => { setCopied(await copyText(live.room_code)); setTimeout(() => setCopied(false), 2000); })()}
+                className="rounded-lg bg-panel px-3 py-1.5 text-xs font-bold text-white active:scale-95"
+              >
+                {copied ? 'Copied ✓' : 'Copy Code'}
+              </button>
+            </div>
+          )}
           <div className="mt-2 flex flex-wrap gap-2">
             {amHost && (
               <button

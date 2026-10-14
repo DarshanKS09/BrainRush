@@ -18,7 +18,7 @@ export function difficultyDisplayName(gameId: string, id: string): string {
 /** One-line difficulty summary, per game (attempts vs rounds). */
 export function difficultySub(
   gameId: string,
-  d: { id: string; max_attempts: number; start_length?: number; wait_min_ms?: number; wait_max_ms?: number },
+  d: { id: string; max_attempts: number; start_length?: number; wait_min_ms?: number; wait_max_ms?: number; target_min_ms?: number; target_max_ms?: number; target_step_ms?: number },
 ): string {
   if (gameId === 'color_sequence') {
     return `Up to ${d.max_attempts} rounds · starts at ${d.start_length ?? '?'}`;
@@ -29,6 +29,14 @@ export function difficultySub(
       return `Waits ${d.wait_min_ms / 1000}–${d.wait_max_ms / 1000} s`;
     }
     return `5 rounds · tap fast`;
+  }
+  if (gameId === 'perfect_second') {
+    if (d.target_min_ms !== undefined && d.target_max_ms !== undefined) {
+      const step = d.target_step_ms ?? 1000;
+      const stepText = step >= 1000 ? `${step / 1000} s steps` : step >= 1 ? `${step} ms steps` : '';
+      return `Targets ${(d.target_min_ms / 1000).toString().replace(/\.0$/, '')}–${d.target_max_ms / 1000} s${stepText ? ` · ${stepText}` : ''}`;
+    }
+    return `Stop on the target`;
   }
   return difficultyBlurb(d.max_attempts);
 }
@@ -91,6 +99,7 @@ export function gameTitle(gameType: string): string {
   if (gameType === 'color_sequence') return 'Color Sequence';
   if (gameType === 'number_guessing') return 'Number Guessing';
   if (gameType === 'reflex_rush') return 'Reflex Rush';
+  if (gameType === 'perfect_second') return 'Perfect Second';
   return gameType;
 }
 
@@ -101,10 +110,14 @@ export function resumeHint(game: {
   level?: number;
   rounds_played?: number;
   rounds_total?: number;
+  target_ms?: number;
+  difficulty?: string;
 }): string {
   if (game.game_type === 'color_sequence') return `Lv ${game.level ?? '?'}`;
   if (game.game_type === 'reflex_rush')
     return `${game.rounds_played ?? 0}/${game.rounds_total ?? 5}`;
+  if (game.game_type === 'perfect_second')
+    return game.target_ms !== undefined ? `🎯 ${formatSeconds(game.target_ms, game.difficulty ?? 'hard')}` : '🎯 ready';
   return `${game.attempts_left ?? '?'} left`;
 }
 
@@ -112,4 +125,28 @@ export function resumeHint(game: {
 export function formatMs(ms: number | null): string {
   if (ms === null || ms === undefined) return 'False start';
   return `${ms} ms`;
+}
+
+/** Format a stopwatch time for display, per Perfect Second difficulty:
+ * easy shows whole seconds, medium trims to halves, hard shows hundredths.
+ * Unknown difficulties default to hundredths (never hide precision). */
+export function formatSeconds(ms: number, difficulty: string): string {
+  const s = ms / 1000;
+  if (difficulty === 'easy') return `${Math.round(s)} s`;
+  if (difficulty === 'medium') {
+    const halves = Math.round(s * 2) / 2;
+    return `${Number.isInteger(halves) ? halves : halves.toFixed(1)} s`;
+  }
+  return `${s.toFixed(2)} s`;
+}
+
+/** Result message tier for a Perfect Second accuracy percent (0–100). */
+export function perfectVerdict(accuracyPercent: number): string {
+  if (accuracyPercent >= 100) return 'PERFECT! 🏆';
+  if (accuracyPercent >= 90) return 'Incredible! ⚡';
+  if (accuracyPercent >= 70) return 'Great timing! 🎯';
+  if (accuracyPercent >= 50) return 'Good effort! 👍';
+  if (accuracyPercent >= 25) return 'Close — keep practicing! 🙂';
+  if (accuracyPercent > 0) return 'Way off! 😅';
+  return 'Missed it! 💪';
 }

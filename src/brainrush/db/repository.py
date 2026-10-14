@@ -846,6 +846,27 @@ def _new_match_token() -> str:
     return "m-" + secrets.token_urlsafe(18)
 
 
+def _new_room_code() -> str:
+    import secrets
+
+    # Human-readable manual-entry code: unambiguous alphabet (no 0/O/1/I),
+    # deliberately separate from the opaque invite_token authorization
+    # secret used in share links.
+    alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(6))
+
+
+def _require_room_code(value: Any) -> str:
+    import re
+
+    if not isinstance(value, str):
+        raise ValueError("room code must be a string")
+    code = value.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{4,12}", code):
+        raise ValueError("invalid room code")
+    return code
+
+
 class MatchRepository(BaseRepository[Match]):
     """Matches. No commits; services own txns."""
 
@@ -868,6 +889,7 @@ class MatchRepository(BaseRepository[Match]):
             max_players=max_players,
             min_players=min_players,
             invite_token=_new_match_token(),
+            room_code=_new_room_code(),
             token_expires_at=token_expires_at,
             difficulty=difficulty,
         )
@@ -888,6 +910,13 @@ class MatchRepository(BaseRepository[Match]):
     async def get_by_token(self, *, token: str) -> Match | None:
         result = await self.session.execute(
             select(Match).where(Match.invite_token == token)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_room_code(self, *, room_code: str) -> Match | None:
+        room_code = _require_room_code(room_code)
+        result = await self.session.execute(
+            select(Match).where(Match.room_code == room_code)
         )
         return result.scalar_one_or_none()
 

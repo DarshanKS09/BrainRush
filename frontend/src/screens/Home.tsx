@@ -83,7 +83,7 @@ export function HomeScreen({
               onClick={() => onResume(g.game_type, g.session_id)}
               className="mt-1 flex w-full items-center justify-between rounded-xl bg-panel px-3 py-2.5 text-sm font-semibold text-white active:scale-[0.99]"
             >
-              <span>{g.game_type === 'color_sequence' ? '🎨' : g.game_type === 'reflex_rush' ? '👆' : '🔢'} {gameTitle(g.game_type)} · {g.difficulty}</span>
+              <span>{g.game_type === 'color_sequence' ? '🎨' : g.game_type === 'reflex_rush' ? '👆' : g.game_type === 'perfect_second' ? '⏱️' : '🔢'} {gameTitle(g.game_type)} · {g.difficulty}</span>
               <span className="text-neon-cyan">{resumeHint(g)} →</span>
             </button>
           ))}
@@ -111,7 +111,7 @@ export function HomeScreen({
                   {sessionStatusLabel(h.status, h.outcome)}
                 </span>
                 <span className="text-slate-400">
-                  {h.game_type === 'color_sequence' ? `Lv ${h.score}` : h.game_type === 'reflex_rush' ? `${h.score} pts` : `${h.score} tries`} · +{h.xp_earned} XP · {formatDate(h.started_at)}
+                  {h.game_type === 'color_sequence' ? `Lv ${h.score}` : h.game_type === 'reflex_rush' ? `${h.score} pts` : h.game_type === 'perfect_second' ? `${(h.score / 1000).toFixed(2)}s err` : `${h.score} tries`} · +{h.xp_earned} XP · {formatDate(h.started_at)}
                 </span>
               </li>
             ))}
@@ -130,6 +130,11 @@ export function HomeScreen({
         {data.best_reflex_score !== null && data.best_reflex_score !== undefined && (
           <p className="mt-1 text-center text-xs text-slate-400">
             👆 Reflex best: {data.best_reflex_score} pts
+          </p>
+        )}
+        {data.best_perfect_error_ms !== null && data.best_perfect_error_ms !== undefined && (
+          <p className="mt-1 text-center text-xs text-slate-400">
+            ⏱️ Perfect best: {(data.best_perfect_error_ms / 1000).toFixed(2)}s error
           </p>
         )}
       </div>

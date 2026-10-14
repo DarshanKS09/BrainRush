@@ -44,8 +44,8 @@ class StubService:
         self._raise()
         return self.dashboard_data
 
-    async def start_game(self, *, user_id, difficulty="hard", game_type="number_guessing"):
-        self.calls.append(("start", user_id, difficulty, game_type))
+    async def start_game(self, *, user_id, difficulty="hard", game_type="number_guessing", match_id=None):
+        self.calls.append(("start", user_id, difficulty, game_type, match_id))
         StubService.all_calls.append(("start", user_id, difficulty, game_type))
         self._raise()
         return self.state_data

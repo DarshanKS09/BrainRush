@@ -432,10 +432,13 @@ def _registered(svc, telegram_id, **kw):
 # -- registry + ranking (pure) -------------------------------------------------
 
 async def test_registry_covers_all_solo_games():
-    assert set(mp.REGISTRY) == {"number_guessing", "color_sequence", "reflex_rush"}
+    assert set(mp.REGISTRY) == {"number_guessing", "color_sequence",
+                                "reflex_rush", "perfect_second"}
     for spec in mp.REGISTRY.values():
         assert spec.modes <= mp.MODES
         assert spec.modes  # every game supports at least one mode
+    assert mp.spec_for("perfect_second").modes == mp.MODES
+    assert mp.spec_for("perfect_second").higher_is_better is False
     with pytest.raises(ValueError):
         mp.spec_for("quiz_rush")
 
@@ -1107,3 +1110,95 @@ def test_match_routes_map_errors(monkeypatch):
                                 "mode": "duel", "difficulty": "hard",
                                 "max_players": 99})
     assert bad_cap.status_code in (200, 422)
+
+
+# -- perfect second multiplayer ----------------------------------------------
+
+async def _perfect_solo(svc, user, target_ms, actual_ms, when=None):
+    from brainrush.game import perfect_second as perfect
+
+    scored = perfect.score_result(target_ms=target_ms, actual_ms=actual_ms)
+    solo = svc.sessions.add_started(user.id, "perfect_second")
+    moment = when or _utcnow()
+    solo.status = "completed"
+    solo.score = scored["score_ms"]
+    solo.ended_at = moment
+    row = svc.results.add(
+        solo.id, scored["score_ms"], "win" if scored["won"] else "loss",
+        {"game": "perfect_second", "difficulty": "medium",
+         "target_ms": target_ms, "actual_ms": actual_ms,
+         "error_ms": scored["error_ms"],
+         "accuracy_percent": scored["accuracy_percent"]},
+        xp=0,
+    )
+    row.created_at = moment
+    return solo
+
+
+async def test_perfect_match_shares_one_target():
+    from brainrush.game import perfect_second as perfect
+
+    session = RecordingSession()
+    svc = _service(session)
+    host = _registered(svc, 111)
+    guest = _registered(svc, 222)
+    mid = await _lobby(svc, host, game="perfect_second", mode="duel",
+                       difficulty="medium")
+    await _join(svc, guest, mid)
+    lobby = await svc.get_match(user_id=host.id, match_id=mid)
+    expected = perfect.match_target_ms(mid, "medium")
+    assert lobby["target_ms"] == expected
+    await _start(svc, host, mid)
+    host_solo = await _perfect_solo(svc, host, expected, float(expected))
+    guest_solo = await _perfect_solo(svc, guest, expected, float(expected) + 500)
+    await svc.submit_result(user_id=host.id, match_id=mid,
+                            session_id=host_solo.id)
+    done = await svc.submit_result(user_id=guest.id, match_id=mid,
+                                   session_id=guest_solo.id)
+    assert done["status"] == "completed"
+    ranks = {p["user_id"]: p["rank"] for p in done["participants"]}
+    assert ranks[str(host.id)] == 1 and ranks[str(guest.id)] == 2
+    assert session.commits == 0
+
+
+async def test_perfect_match_rejects_foreign_target():
+    from brainrush.game import perfect_second as perfect
+
+    session = RecordingSession()
+    svc = _service(session)
+    host = _registered(svc, 111)
+    guest = _registered(svc, 222)
+    mid = await _lobby(svc, host, game="perfect_second", mode="duel",
+                       difficulty="medium")
+    await _join(svc, guest, mid)
+    await _start(svc, host, mid)
+    expected = perfect.match_target_ms(mid, "medium")
+    # A plain solo attempt rolls its own random target: with overwhelming
+    # probability it differs from the shared one; force it explicitly.
+    foreign = expected + 500 if expected + 500 <= 12_000 else expected - 500
+    assert foreign != expected
+    rogue = await _perfect_solo(svc, guest, foreign, float(foreign))
+    with pytest.raises(ConflictError):
+        await svc.submit_result(user_id=guest.id, match_id=mid,
+                                session_id=rogue.id)
+
+
+async def test_perfect_match_exact_tie_shares_rank():
+    from brainrush.game import perfect_second as perfect
+
+    session = RecordingSession()
+    svc = _service(session)
+    users = [_registered(svc, 111 + i) for i in range(3)]
+    mid = await _lobby(svc, users[0], game="perfect_second", mode="ffa")
+    for u in users[1:]:
+        await _join(svc, u, mid)
+    await _start(svc, users[0], mid)
+    expected = perfect.match_target_ms(mid, "hard")
+    moment = _utcnow()
+    for u in users:
+        solo = await _perfect_solo(svc, u, expected, float(expected) + 250,
+                                   when=moment)
+        await svc.submit_result(user_id=u.id, match_id=mid, session_id=solo.id)
+    view = await svc.get_match(user_id=users[0].id, match_id=mid)
+    assert sorted(p["rank"] for p in view["participants"]) == [1, 1, 1]
+    assert session.commits == 0

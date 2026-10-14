@@ -14,6 +14,8 @@ Safety properties (all enforced here, never in the frontend):
     same game, started after the match, and attached to no other match.
     A different session for the same seat is rejected (one attempt each);
     resubmitting the same session replays the current view.
+  - Shared-target games (Perfect Second) additionally require the
+    session's target to equal the match's deterministic target.
   - Scores/XP/outcomes come from persisted solo results, never the request.
   - Match XP flows only through the `match_rewards` ledger (ON CONFLICT DO
     NOTHING) plus `add_xp`, so retries and concurrent finalizations can
@@ -140,8 +142,7 @@ class MatchService:
     async def _view(self, match, *, me_id: uuid.UUID) -> dict:
         parts = await self.parts.list_by_match(match_id=match.id)
         people, _ = await self._people(parts, match.host_user_id, me_id)
-        base = {
-            "match_id": str(match.id),
+        base = {            "match_id": str(match.id),
             "game_type": match.game_type,
             "mode": match.mode,
             "difficulty": match.difficulty,
@@ -150,6 +151,7 @@ class MatchService:
             "count": len(parts),
             "min_players": match.min_players,
             "max_players": match.max_players,
+            "room_code": match.room_code,
             "token_expires_at": match.token_expires_at.isoformat()
             if match.token_expires_at
             else None,
@@ -159,6 +161,14 @@ class MatchService:
             "finished_at": match.finished_at.isoformat() if match.finished_at else None,
             "participants": people,
         }
+        # Shared round target (Perfect Second): public once the attempt
+        # starts, so the lobby can show it. Independent-content games omit it.
+        try:
+            base["target_ms"] = mp.spec_for(match.game_type).shared_target_ms(
+                match_id=match.id, difficulty=match.difficulty
+            )
+        except ValueError:
+            base["target_ms"] = None
         return base
 
     async def _touch_seen(self, *, match_id: uuid.UUID, user_id: uuid.UUID) -> None:
@@ -414,6 +424,47 @@ class MatchService:
             )
             return await self._view(locked, me_id=user_id)
 
+    async def join_by_code(self, *, user_id: uuid.UUID, room_code: str) -> dict:
+        """Join via the human-readable room code (manual entry).
+
+        Same seat guarantees as share-link joins (idempotent, capacity and
+        lifecycle enforced, row-locked). Room codes never expire on their own;
+        lobby TTL and match status still apply. The code is not an
+        authorization secret: membership is derived from the verified identity.
+        """
+        async with self.session.begin():
+            match = await self.matches.get_by_room_code(room_code=room_code)
+            if match is None:
+                raise NotFoundError("Room not found. Please check the code.")
+            locked = await self.matches.get_for_update(match.id)
+            if locked is None:  # pragma: no cover - defensive
+                raise NotFoundError("Room not found. Please check the code.")
+            await self._maybe_expire_locked(locked)
+            if locked.status == "expired":
+                raise ConflictError("This room has expired.")
+            if locked.status in ("completed", "cancelled"):
+                raise ConflictError("This match is already finished.")
+            if locked.status not in ("lobby", "active"):
+                raise ConflictError("This match is already finished.")
+            if await self.users.get_by_id(user_id) is None:
+                raise NotFoundError("user not found")
+            existing = await self.parts.get(match_id=locked.id, user_id=user_id)
+            if existing is not None:
+                return await self._view(locked, me_id=user_id)
+            if (
+                await self.parts.count_by_match(match_id=locked.id)
+                >= locked.max_players
+            ):
+                raise ConflictError("Room is full.")
+            try:
+                await self.parts.add(match_id=locked.id, user_id=user_id)
+            except IntegrityError:
+                raise ConflictError("already in match — refresh") from None
+            await self.invites.set_status(
+                match_id=locked.id, invited_user_id=user_id, status="accepted"
+            )
+            return await self._view(locked, me_id=user_id)
+
     async def invite_friend(
         self, *, host_user_id: uuid.UUID, match_id: uuid.UUID, friend_user_id: uuid.UUID
     ) -> dict:
@@ -514,6 +565,19 @@ class MatchService:
             res = await self.results.get_by_session(session_id)
             if res is None:  # pragma: no cover - defensive (finish records)
                 raise NotFoundError("game result not found")
+            expected_target = mp.spec_for(match.game_type).shared_target_ms(
+                match_id=match.id, difficulty=match.difficulty
+            )
+            if expected_target is not None:
+                # Shared-target games: the seat only counts when the player
+                # stopped against the match's own target (match-linked solo
+                # starts resolve it server-side; foreign solo sessions with
+                # a different random target are rejected here).
+                meta = dict(res.result_metadata or {})
+                if meta.get("target_ms") != expected_target:
+                    raise ConflictError(
+                        "session target does not match the match target"
+                    )
             stats = _stats_snapshot(match.game_type, res)
             await self.parts.attach_result(
                 match_id=match.id,
@@ -722,4 +786,9 @@ def _stats_snapshot(game_type: str, res) -> dict:
         }
     if game_type == "color_sequence":
         return {"levels": res.score}
+    if game_type == "perfect_second":
+        return {
+            "error_ms": meta.get("error_ms"),
+            "accuracy_percent": meta.get("accuracy_percent"),
+        }
     return {"attempts": res.score}
