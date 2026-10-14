@@ -4,11 +4,15 @@ import type { WebAppContext } from '../telegram';
 import { ErrorNotice, Loading } from '../components/ui';
 import { haptic } from '../telegram';
 
+/** Gap between a completed round and the next level's playback. */
+export const ROUND_TRANSITION_MS = 2000;
+const TRANSITION_TICK_MS = 100;
+
 const COLORS = [
-  { name: 'Red', base: 'bg-rose-600', lit: 'bg-rose-400 shadow-[0_0_36px_rgba(251,113,133,0.9)]' },
-  { name: 'Green', base: 'bg-emerald-600', lit: 'bg-emerald-300 shadow-[0_0_36px_rgba(110,231,183,0.9)]' },
-  { name: 'Blue', base: 'bg-sky-600', lit: 'bg-sky-300 shadow-[0_0_36px_rgba(125,211,252,0.9)]' },
-  { name: 'Yellow', base: 'bg-amber-500', lit: 'bg-amber-200 shadow-[0_0_36px_rgba(252,211,77,0.9)]' },
+  { name: 'Red', base: 'bg-rose-700', lit: 'bg-rose-300 scale-[1.06] brightness-150 ring-4 ring-rose-100/80 shadow-[0_0_64px_rgba(251,113,133,1)]' },
+  { name: 'Green', base: 'bg-emerald-700', lit: 'bg-emerald-200 scale-[1.06] brightness-150 ring-4 ring-emerald-100/80 shadow-[0_0_64px_rgba(110,231,183,1)]' },
+  { name: 'Blue', base: 'bg-sky-700', lit: 'bg-sky-200 scale-[1.06] brightness-150 ring-4 ring-sky-100/80 shadow-[0_0_64px_rgba(125,211,252,1)]' },
+  { name: 'Yellow', base: 'bg-amber-600', lit: 'bg-amber-100 scale-[1.06] brightness-150 ring-4 ring-amber-100/80 shadow-[0_0_64px_rgba(252,211,77,1)]' },
 ];
 const FREQS = [261.6, 329.6, 392.0, 523.3];
 
@@ -52,6 +56,8 @@ export function ColorPlayScreen({
   const [flash, setFlash] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [replaying, setReplaying] = useState(false);
+  const [started, setStarted] = useState(false);
+  const [transitionMs, setTransitionMs] = useState<number | null>(null);
   const viewRef = useRef<ColorState | null>(null);
   viewRef.current = view;
   const playedLevel = useRef<string>('');
@@ -69,15 +75,34 @@ export function ColorPlayScreen({
         const colorGame = games.games.find((g) => g.id === 'color_sequence');
         const diff = colorGame?.difficulties.find((d) => d.id === state.difficulty);
         if (diff?.playback_ms) setPlaybackMs(diff.playback_ms);
+        // Resumed mid-run games skip the instructions.
+        if (state.moves.length > 0 || state.levels_completed > 0) {
+          setStarted(true);
+        }
       })
       .catch((e: Error) => setError(e.message));
   }, [ctx.initData, sessionId]);
 
   useEffect(load, [load]);
 
-  // Play back the current level's prefix whenever a new level arrives.
+  // Round transition: single chained timeout, cleaned up on unmount,
+  // restart, or when a new transition supersedes it.
   useEffect(() => {
-    if (!view || view.finished) return;
+    if (transitionMs === null) return;
+    if (transitionMs <= 0) {
+      setTransitionMs(null);
+      return;
+    }
+    const t = setTimeout(() => {
+      setTransitionMs((ms) => (ms === null ? null : ms - TRANSITION_TICK_MS));
+    }, TRANSITION_TICK_MS);
+    return () => clearTimeout(t);
+  }, [transitionMs]);
+
+  // Play back the current level's prefix whenever a new level arrives,
+  // once the player has pressed Start and no transition is running.
+  useEffect(() => {
+    if (!view || view.finished || !started || transitionMs !== null) return;
     const key = `${view.session_id}:${view.level}:${view.moves.length}`;
     if (playedLevel.current === key) return;
     playedLevel.current = key;
@@ -96,17 +121,22 @@ export function ColorPlayScreen({
     });
     timers.push(setTimeout(() => setShowing(false), 450 + view.display.length * step));
     return () => timers.forEach(clearTimeout);
-  }, [view, playbackMs]);
+  }, [view, playbackMs, started, transitionMs]);
 
   const tap = useCallback(
     async (color: number) => {
       const current = viewRef.current;
-      if (!current || current.finished || showing || busy) return;
+      if (!current || current.finished || showing || busy || !started || transitionMs !== null) return;
       setBusy(true);
       setNotice('');
       try {
         const next = await api.move(ctx.initData, sessionId, color, newClientGuessId());
         setView(next);
+        if (!next.finished && next.levels_completed > current.levels_completed) {
+          // Round cleared: pause for the transition, then play the next level.
+          playedLevel.current = '';
+          setTransitionMs(ROUND_TRANSITION_MS);
+        }
         if (next.finished) haptic(next.result?.outcome === 'win' ? 'success' : 'error');
       } catch (e) {
         setNotice(e instanceof Error ? e.message : 'Tap failed. Try again.');
@@ -114,7 +144,7 @@ export function ColorPlayScreen({
         setBusy(false);
       }
     },
-    [busy, ctx.initData, sessionId, showing],
+    [busy, ctx.initData, sessionId, showing, started, transitionMs],
   );
 
   useEffect(() => {
@@ -188,7 +218,57 @@ export function ColorPlayScreen({
     );
   }
 
-  const inputLocked = showing || busy;
+  if (!started) {
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <button onClick={onExit} className="rounded-xl bg-panel px-3 py-1.5 text-sm font-semibold text-slate-300 active:scale-95" aria-label="Back to lobby">
+            ← Lobby
+          </button>
+          <span className="rounded-full bg-panel px-3 py-1 text-xs font-bold uppercase tracking-wider text-neon-cyan">
+            {view.difficulty} · up to Lv {view.max_level}
+          </span>
+          <button onClick={cancel} className="rounded-xl bg-panel px-3 py-1.5 text-sm font-semibold text-rose-300 active:scale-95" aria-label="Cancel game">
+            ✕ Give up
+          </button>
+        </div>
+        <div className="rounded-3xl bg-panel p-6 text-center shadow-card animate-pop">
+          <div className="text-5xl" aria-hidden>
+            🎨
+          </div>
+          <h2 className="mt-3 text-xl font-bold text-white">
+            Watch the colors carefully, then repeat them in the exact same order.
+          </h2>
+          <p className="mx-auto mt-2 max-w-xs text-sm text-slate-300">
+            Memorize the flashing sequence. Tap the colors in order after the
+            demonstration finishes. One wrong tap ends your run.
+          </p>
+          {best !== null && (
+            <p className="mt-2 text-xs text-slate-400">🎨 Personal best: level {best}</p>
+          )}
+          <button
+            onClick={() => setStarted(true)}
+            className="mt-4 w-full rounded-xl bg-gradient-to-r from-neon-purple to-neon-cyan py-3 text-base font-bold text-white shadow-glow active:scale-[0.99]"
+          >
+            ▶ Start Game
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-3 opacity-60" aria-hidden="true">
+          {COLORS.map((c) => (
+            <div
+              key={c.name}
+              className={`flex h-20 items-center justify-center rounded-3xl text-base font-bold text-white/70 ${c.base}`}
+            >
+              {c.name}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const inputLocked = showing || busy || transitionMs !== null;
+  const countdown = transitionMs === null ? 0 : Math.ceil(transitionMs / 1000);
 
   return (
     <div className="space-y-3">
@@ -205,9 +285,28 @@ export function ColorPlayScreen({
       </div>
 
       <div className="rounded-3xl bg-panel p-5 text-center shadow-card">
-        <p className="text-xs uppercase tracking-widest text-slate-400" aria-live="polite">
-          {showing ? '👀 Watch carefully…' : `Your turn — repeat ${view.level} colors`}
-        </p>
+        {transitionMs !== null ? (
+          <div aria-live="polite">
+            <p className="text-base font-bold text-emerald-300">✅ Correct! Get ready… {countdown}</p>
+            <div
+              className="mx-auto mt-2 h-1.5 max-w-[220px] overflow-hidden rounded-full bg-navy"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={ROUND_TRANSITION_MS}
+              aria-valuenow={transitionMs}
+              aria-label="Next sequence starting soon"
+            >
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-neon-cyan"
+                style={{ width: `${(transitionMs / ROUND_TRANSITION_MS) * 100}%`, transition: 'width 100ms linear' }}
+              />
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs uppercase tracking-widest text-slate-400" aria-live="polite">
+            {showing ? '👀 Watch carefully…' : `Your turn — repeat ${view.level} colors`}
+          </p>
+        )}
         <div className="mt-2 flex justify-center gap-1.5" aria-label={`Level progress ${view.levels_completed} completed`}>
           {Array.from({ length: view.max_level }).map((_, i) => (
             <span
@@ -233,7 +332,7 @@ export function ColorPlayScreen({
             onClick={() => void tap(i)}
             disabled={inputLocked}
             aria-label={`${c.name} button${flash === i ? ' (flashing)' : ''}`}
-            className={`key-btn h-28 rounded-3xl text-lg font-bold text-white/90 shadow-card disabled:cursor-default ${
+            className={`key-btn color-flash h-28 rounded-3xl text-lg font-bold text-white/90 shadow-card disabled:cursor-default ${
               flash === i ? c.lit : c.base
             } ${inputLocked ? 'opacity-90' : 'active:scale-95'}`}
           >
@@ -241,7 +340,7 @@ export function ColorPlayScreen({
           </button>
         ))}
       </div>
-      <p className="text-center text-[11px] text-slate-500">Keys 1–4 work too · input locks during playback</p>
+      <p className="text-center text-[11px] text-slate-500">Keys 1–4 work too · input locks during playback and transitions</p>
     </div>
   );
 }
