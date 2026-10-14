@@ -1,7 +1,8 @@
 """Initial production-ready schema (tables only, no game logic).
 
 Tables: users, player_profiles, game_sessions, game_results, daily_activities,
-referral_codes, referral_attributions, friend_codes, friendships.
+referral_codes, referral_attributions, friend_codes, friendships, matches,
+match_participants, match_invitations, match_rewards.
 Primary keys are UUID; Telegram user IDs stay BIGINT. All timestamps are
 timezone-aware. Status/outcome use CHECK constraints instead of PG ENUMs so
 future value additions are non-destructive (no ALTER TYPE ... ADD VALUE).
@@ -263,6 +264,159 @@ class Friendship(Base):
         ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
+        _tz_now(), server_default=func.now(), nullable=False
+    )
+
+
+class Match(Base):
+    """One multiplayer contest. Lifecycle: lobby -> active -> completed, with
+    cancelled/expired as terminal escape hatches. `invite_token` is a random
+    capability (never a secret or DB id); lobbies auto-expire, active matches
+    end at `deadline` (authoritative server time)."""
+    __tablename__ = "matches"
+    __table_args__ = (
+        CheckConstraint(
+            "mode IN ('duel', 'ffa', 'tournament')",
+            name="ck_matches_mode",
+        ),
+        CheckConstraint(
+            "status IN ('lobby', 'active', 'completed', 'cancelled', 'expired')",
+            name="ck_matches_status",
+        ),
+        CheckConstraint(
+            "max_players >= 2 AND max_players <= 32",
+            name="ck_matches_max_players",
+        ),
+        CheckConstraint(
+            "min_players >= 2 AND min_players <= max_players",
+            name="ck_matches_min_players",
+        ),
+        UniqueConstraint("invite_token", name="uq_matches_invite_token"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    game_type: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="lobby", nullable=False)
+    host_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    max_players: Mapped[int] = mapped_column(Integer, nullable=False)
+    min_players: Mapped[int] = mapped_column(Integer, nullable=False)
+    invite_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    token_expires_at: Mapped[datetime] = mapped_column(_tz_now(), nullable=False)
+    difficulty: Mapped[str] = mapped_column(String(16), default="hard", nullable=False)
+    settings: Mapped[dict] = mapped_column("settings", JSONB, default=dict, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(_tz_now(), nullable=True)
+    deadline: Mapped[datetime | None] = mapped_column(_tz_now(), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(_tz_now(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        _tz_now(), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        _tz_now(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    participants: Mapped[list["MatchParticipant"]] = relationship(
+        back_populates="match", cascade="all, delete-orphan"
+    )
+
+
+class MatchParticipant(Base):
+    """One player's seat in a match. UNIQUE(match_id, user_id) makes duplicate
+    joins (including concurrent ones) impossible at the database level.
+    UNIQUE(session_id) lets one solo session count for at most one match."""
+
+    __tablename__ = "match_participants"
+    __table_args__ = (
+        UniqueConstraint("match_id", "user_id", name="uq_match_participant_seat"),
+        UniqueConstraint("session_id", name="uq_match_participant_session"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    match_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("matches.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("game_sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    stats: Mapped[dict] = mapped_column("stats", JSONB, default=dict, nullable=False)
+    xp_earned: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(_tz_now(), nullable=True)
+    joined_at: Mapped[datetime] = mapped_column(
+        _tz_now(), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        _tz_now(), server_default=func.now(), nullable=False
+    )
+
+    match: Mapped[Match] = relationship(back_populates="participants")
+
+
+class MatchInvitation(Base):
+    """Friend invite to a match lobby. UNIQUE(match_id, invited_user_id) makes
+    duplicate invitations idempotent; status is informational (joining is what
+    creates the seat)."""
+
+    __tablename__ = "match_invitations"
+    __table_args__ = (
+        UniqueConstraint(
+            "match_id", "invited_user_id", name="uq_match_invitation"
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'accepted', 'declined')",
+            name="ck_match_invitation_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    match_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("matches.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    invited_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    invited_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        _tz_now(), server_default=func.now(), nullable=False
+    )
+
+
+class MatchReward(Base):
+    """Exactly-once multiplayer XP ledger. UNIQUE(match_id, user_id, kind)
+    plus ON CONFLICT DO NOTHING means retries and concurrent finalizations
+    can never double-award: only the first insert pays out via add_xp. A
+    winner holds two rows (participation + win); each kind pays at most
+    once."""
+    __tablename__ = "match_rewards"
+    __table_args__ = (
+        UniqueConstraint(
+            "match_id", "user_id", "kind", name="uq_match_reward_once"
+        ),
+        CheckConstraint(
+            "kind IN ('participation', 'win')", name="ck_match_reward_kind"
+        ),
+        CheckConstraint("xp >= 0", name="ck_match_reward_xp"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    match_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("matches.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    xp: Mapped[int] = mapped_column(Integer, nullable=False)
+    awarded_at: Mapped[datetime] = mapped_column(
         _tz_now(), server_default=func.now(), nullable=False
     )
 

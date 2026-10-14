@@ -3,6 +3,7 @@ import { api, newClientGuessId, type GameState } from '../api';
 import { keypadReducer } from '../gameutil';
 import type { WebAppContext } from '../telegram';
 import { AttemptPips, GuessHistory, Keypad } from '../components/game';
+import { MatchSubmitBanner } from '../components/MatchSubmit';
 import { ErrorNotice, Loading } from '../components/ui';
 import { haptic } from '../telegram';
 
@@ -11,11 +12,15 @@ export function PlayScreen({
   sessionId,
   onExit,
   onReplay,
+  matchId,
+  onBackToMatch,
 }: {
   ctx: WebAppContext;
   sessionId: string;
   onExit: () => void;
   onReplay: (sessionId: string) => void;
+  matchId?: string | null;
+  onBackToMatch?: () => void;
 }) {
   const [state, setState] = useState<GameState | null>(null);
   const [buffer, setBuffer] = useState('');
@@ -111,6 +116,9 @@ export function PlayScreen({
           </button>
           <ReplayButton ctx={ctx} onReplay={onReplay} />
         </div>
+        {matchId && onBackToMatch && (
+          <MatchSubmitBanner ctx={ctx} matchId={matchId} sessionId={sessionId} onBackToMatch={onBackToMatch} />
+        )}
       </div>
     );
   }

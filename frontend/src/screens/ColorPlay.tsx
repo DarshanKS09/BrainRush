@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, newClientGuessId, type ColorState } from '../api';
 import type { WebAppContext } from '../telegram';
+import { MatchSubmitBanner } from '../components/MatchSubmit';
 import { ErrorNotice, Loading } from '../components/ui';
 import { haptic } from '../telegram';
 
@@ -41,11 +42,15 @@ export function ColorPlayScreen({
   sessionId,
   onExit,
   onReplay,
+  matchId,
+  onBackToMatch,
 }: {
   ctx: WebAppContext;
   sessionId: string;
   onExit: () => void;
   onReplay: (sessionId: string) => void;
+  matchId?: string | null;
+  onBackToMatch?: () => void;
 }) {
   const [view, setView] = useState<ColorState | null>(null);
   const [playbackMs, setPlaybackMs] = useState(500);
@@ -278,6 +283,9 @@ export function ColorPlayScreen({
             {replaying ? 'Starting…' : '↻ Play again'}
           </button>
         </div>
+        {matchId && onBackToMatch && (
+          <MatchSubmitBanner ctx={ctx} matchId={matchId} sessionId={sessionId} onBackToMatch={onBackToMatch} />
+        )}
       </div>
     );
   }

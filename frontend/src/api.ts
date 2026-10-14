@@ -184,6 +184,79 @@ export interface FriendAddResult {
   friend: FriendEntry;
 }
 
+export interface MatchParticipant {
+  user_id: string;
+  display_name: string;
+  username: string | null;
+  level: number;
+  is_host: boolean;
+  is_me: boolean;
+  finished: boolean;
+  score: number | null;
+  rank: number | null;
+  xp_earned: number;
+  online: boolean;
+  joined_at: string | null;
+}
+
+export interface MatchView {
+  match_id: string;
+  game_type: string;
+  mode: string;
+  difficulty: string;
+  status: string;
+  host_user_id: string;
+  count: number;
+  min_players: number;
+  max_players: number;
+  token_expires_at: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  deadline: string | null;
+  finished_at: string | null;
+  participants: MatchParticipant[];
+}
+
+export interface MatchResultView {
+  match_id: string;
+  game_type: string;
+  mode: string;
+  difficulty: string;
+  status: string;
+  finished_at: string | null;
+  participants: MatchParticipant[];
+  count: number;
+}
+
+export interface MatchListItem {
+  match_id: string;
+  game_type: string;
+  mode: string;
+  difficulty: string;
+  status: string;
+  my_rank: number | null;
+  participants: number;
+  max_players: number;
+  finished_at: string | null;
+  created_at: string | null;
+}
+
+export interface MatchInviteItem {
+  match_id: string;
+  game_type: string;
+  mode: string;
+  difficulty: string;
+  host_display_name: string;
+  participants: number;
+  max_players: number;
+  invited_at: string | null;
+}
+
+export interface MatchInviteLink {
+  token: string;
+  link: string | null;
+}
+
 export interface HistoryItem {
   session_id: string;
   game_type: string;
@@ -309,6 +382,47 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ code }),
     }),
+  matchCreate: (initData: string, game_type: string, mode: string, difficulty: string, max_players?: number) =>
+    request<MatchView>('/api/matches', initData, {
+      method: 'POST',
+      body: JSON.stringify({ game_type, mode, difficulty, max_players: max_players ?? null }),
+    }),
+  matchMine: (initData: string, limit = 20, offset = 0) =>
+    request<{ items: MatchListItem[] }>(`/api/matches/mine?limit=${limit}&offset=${offset}`, initData),
+  matchInvites: (initData: string) =>
+    request<{ items: MatchInviteItem[] }>('/api/matches/invites', initData),
+  matchGet: (initData: string, matchId: string) =>
+    request<MatchView | MatchResultView>(`/api/matches/${matchId}`, initData),
+  matchJoinByToken: (initData: string, token: string) =>
+    request<MatchView>('/api/matches/join', initData, {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    }),
+  matchJoin: (initData: string, matchId: string) =>
+    request<MatchView>(`/api/matches/${matchId}/join`, initData, { method: 'POST' }),
+  matchInvite: (initData: string, matchId: string, friend_user_id: string) =>
+    request<{ match_id: string; invited: boolean; already: boolean; status: string }>(
+      `/api/matches/${matchId}/invite`, initData, {
+        method: 'POST',
+        body: JSON.stringify({ friend_user_id }),
+      }),
+  matchLink: (initData: string, matchId: string) =>
+    request<MatchInviteLink>(`/api/matches/${matchId}/invite-link`, initData),
+  matchStart: (initData: string, matchId: string) =>
+    request<MatchView>(`/api/matches/${matchId}/start`, initData, { method: 'POST' }),
+  matchSubmit: (initData: string, matchId: string, session_id: string) =>
+    request<MatchView | MatchResultView>(`/api/matches/${matchId}/submit`, initData, {
+      method: 'POST',
+      body: JSON.stringify({ session_id }),
+    }),
+  matchFinalize: (initData: string, matchId: string) =>
+    request<MatchResultView>(`/api/matches/${matchId}/finalize`, initData, { method: 'POST' }),
+  matchCancel: (initData: string, matchId: string) =>
+    request<{ match_id: string; status: string }>(`/api/matches/${matchId}/cancel`, initData, { method: 'POST' }),
+  matchLeave: (initData: string, matchId: string) =>
+    request<{ match_id: string; status: string }>(`/api/matches/${matchId}/leave`, initData, { method: 'POST' }),
+  matchRematch: (initData: string, matchId: string) =>
+    request<MatchView>(`/api/matches/${matchId}/rematch`, initData, { method: 'POST' }),
 };
 
 export function newClientGuessId(): string {

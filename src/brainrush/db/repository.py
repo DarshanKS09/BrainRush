@@ -28,6 +28,10 @@ from brainrush.db.models import (
     Friendship,
     GameResult,
     GameSession,
+    Match,
+    MatchInvitation,
+    MatchParticipant,
+    MatchReward,
     PlayerProfile,
     ReferralAttribution,
     ReferralCode,
@@ -447,6 +451,17 @@ class GameResultRepository(BaseRepository[GameResult]):
         )
         return result.scalar_one_or_none()
 
+    async def list_by_session_ids(
+        self, *, session_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, GameResult]:
+        """Batch result lookup (one query, no N+1 at finalize)."""
+        if not session_ids:
+            return {}
+        result = await self.session.execute(
+            select(GameResult).where(GameResult.session_id.in_(session_ids))
+        )
+        return {r.session_id: r for r in result.scalars().all()}
+
     async def best_win_score(
         self, *, user_id: uuid.UUID, game_type: str | None = None
     ) -> int | None:
@@ -821,3 +836,375 @@ class FriendRepository(BaseRepository[Friendship]):
             .order_by(Friendship.created_at.asc())
         )
         return list(result.scalars().all())
+
+
+def _new_match_token() -> str:
+    import secrets
+
+    # `m-` prefix distinguishes match invites from referral/friend codes in
+    # launch params (those alphabets exclude `-`). 24 urlsafe chars.
+    return "m-" + secrets.token_urlsafe(18)
+
+
+class MatchRepository(BaseRepository[Match]):
+    """Matches. No commits; services own txns."""
+
+    async def create(
+        self,
+        *,
+        game_type: str,
+        mode: str,
+        host_user_id: uuid.UUID,
+        max_players: int,
+        min_players: int,
+        difficulty: str,
+        token_expires_at: datetime,
+    ) -> Match:
+        row = Match(
+            game_type=game_type,
+            mode=mode,
+            status="lobby",
+            host_user_id=host_user_id,
+            max_players=max_players,
+            min_players=min_players,
+            invite_token=_new_match_token(),
+            token_expires_at=token_expires_at,
+            difficulty=difficulty,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def get_by_id(self, match_id: uuid.UUID) -> Match | None:
+        return await self.session.get(Match, match_id)
+
+    async def get_for_update(self, match_id: uuid.UUID) -> Match | None:
+        """Row-locked read: joins/starts/finalizes on one match serialize."""
+        result = await self.session.execute(
+            select(Match).where(Match.id == match_id).with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_token(self, *, token: str) -> Match | None:
+        result = await self.session.execute(
+            select(Match).where(Match.invite_token == token)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_by_user(
+        self, *, user_id: uuid.UUID, limit: int = 20, offset: int = 0
+    ) -> list[Match]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit must be an int in 1..100")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset must be an int >= 0")
+        result = await self.session.execute(
+            select(Match)
+            .join(MatchParticipant, MatchParticipant.match_id == Match.id)
+            .where(MatchParticipant.user_id == user_id)
+            .order_by(Match.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all())
+
+    async def set_status(
+        self, *, match_id: uuid.UUID, status: str
+    ) -> Match | None:
+        """Transition match status (caller enforces the state machine)."""
+        if status not in ("lobby", "active", "completed", "cancelled", "expired"):
+            raise ValueError("unknown match status")
+        result = await self.session.execute(
+            update(Match).where(Match.id == match_id).values(status=status)
+        )
+        await self.session.flush()
+        if result.rowcount != 1:
+            return None
+        return await self.session.get(Match, match_id)
+
+    async def start_match(
+        self, *, match_id: uuid.UUID, started_at: datetime, deadline: datetime
+    ) -> Match | None:
+        """lobby -> active with authoritative timestamps. Returns None unless
+        exactly one lobby row transitioned (loser of a race gets None)."""
+        result = await self.session.execute(
+            update(Match)
+            .where(Match.id == match_id, Match.status == "lobby")
+            .values(status="active", started_at=started_at, deadline=deadline)
+        )
+        await self.session.flush()
+        if result.rowcount != 1:
+            return None
+        return await self.session.get(Match, match_id)
+
+    async def complete_match(
+        self, *, match_id: uuid.UUID, finished_at: datetime
+    ) -> Match | None:
+        """active -> completed. Returns None unless exactly one row moved."""
+        result = await self.session.execute(
+            update(Match)
+            .where(Match.id == match_id, Match.status == "active")
+            .values(status="completed", finished_at=finished_at)
+        )
+        await self.session.flush()
+        if result.rowcount != 1:
+            return None
+        return await self.session.get(Match, match_id)
+
+    async def set_host(self, *, match_id: uuid.UUID, host_user_id: uuid.UUID) -> None:
+        await self.session.execute(
+            update(Match)
+            .where(Match.id == match_id)
+            .values(host_user_id=host_user_id)
+        )
+        await self.session.flush()
+
+    async def expire_old_lobbies(self, *, user_id: uuid.UUID, before: datetime) -> int:
+        """Mark the user's lobby matches older than `before` as expired.
+
+        Single atomic UPDATE scoped to the caller's own lobbies; history is
+        preserved, only joinability ends.
+        """
+        if not isinstance(before, datetime):
+            raise ValueError("before must be a datetime")
+        result = await self.session.execute(
+            update(Match)
+            .where(
+                Match.status == "lobby",
+                Match.created_at < before,
+                Match.id.in_(
+                    select(MatchParticipant.match_id).where(
+                        MatchParticipant.user_id == user_id
+                    )
+                ),
+            )
+            .values(status="expired")
+        )
+        await self.session.flush()
+        return result.rowcount or 0
+
+
+class MatchParticipantRepository(BaseRepository[MatchParticipant]):
+    """Seats in a match. UNIQUE(match_id, user_id) makes duplicate joins
+    (including concurrent ones) fail atomically (IntegrityError)."""
+
+    async def get(
+        self, *, match_id: uuid.UUID, user_id: uuid.UUID
+    ) -> MatchParticipant | None:
+        result = await self.session.execute(
+            select(MatchParticipant).where(
+                MatchParticipant.match_id == match_id,
+                MatchParticipant.user_id == user_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_session(
+        self, *, session_id: uuid.UUID
+    ) -> MatchParticipant | None:
+        result = await self.session.execute(
+            select(MatchParticipant).where(
+                MatchParticipant.session_id == session_id
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_by_match(
+        self, *, match_id: uuid.UUID
+    ) -> list[MatchParticipant]:
+        result = await self.session.execute(
+            select(MatchParticipant)
+            .where(MatchParticipant.match_id == match_id)
+            .order_by(MatchParticipant.joined_at.asc())
+        )
+        return list(result.scalars().all())
+
+    async def count_by_match(self, *, match_id: uuid.UUID) -> int:
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(MatchParticipant)
+            .where(MatchParticipant.match_id == match_id)
+        )
+        return result.scalar_one_or_none() or 0
+
+    async def add(self, *, match_id: uuid.UUID, user_id: uuid.UUID) -> MatchParticipant:
+        row = MatchParticipant(match_id=match_id, user_id=user_id)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def attach_result(
+        self,
+        *,
+        match_id: uuid.UUID,
+        user_id: uuid.UUID,
+        session_id: uuid.UUID,
+        score: int,
+        stats: dict,
+    ) -> MatchParticipant:
+        """Attach one finished solo session. Only NULL-seated rows match, so
+        a second attach attempt finds nothing (service treats it as replay)."""
+        _require_non_negative_int(score, field="score")
+        if not isinstance(stats, dict):
+            raise ValueError("stats must be a dict")
+        result = await self.session.execute(
+            update(MatchParticipant)
+            .where(
+                MatchParticipant.match_id == match_id,
+                MatchParticipant.user_id == user_id,
+                MatchParticipant.session_id.is_(None),
+            )
+            .values(
+                session_id=session_id,
+                score=score,
+                stats=dict(stats),
+                finished_at=func.now(),
+            )
+        )
+        await self.session.flush()
+        row = await self.get(match_id=match_id, user_id=user_id)
+        if row is None:  # pragma: no cover - defensive
+            raise NotFoundError("match participant not found")
+        return row
+
+    async def set_rank_xp(
+        self, *, match_id: uuid.UUID, user_id: uuid.UUID, rank: int, xp: int
+    ) -> None:
+        _require_non_negative_int(xp, field="xp")
+        await self.session.execute(
+            update(MatchParticipant)
+            .where(
+                MatchParticipant.match_id == match_id,
+                MatchParticipant.user_id == user_id,
+            )
+            .values(rank=rank, xp_earned=xp)
+        )
+        await self.session.flush()
+
+    async def remove(self, *, match_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        row = await self.get(match_id=match_id, user_id=user_id)
+        if row is not None:
+            await self.session.delete(row)
+            await self.session.flush()
+
+
+class MatchInvitationRepository(BaseRepository[MatchInvitation]):
+    """Friend invitations to lobbies. UNIQUE(match_id, invited_user_id) makes
+    duplicate invitations idempotent (IntegrityError → return existing)."""
+
+    async def get(
+        self, *, match_id: uuid.UUID, invited_user_id: uuid.UUID
+    ) -> MatchInvitation | None:
+        result = await self.session.execute(
+            select(MatchInvitation).where(
+                MatchInvitation.match_id == match_id,
+                MatchInvitation.invited_user_id == invited_user_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_pending_with_matches(
+        self, *, user_id: uuid.UUID
+    ) -> list[tuple[MatchInvitation, Match]]:
+        """Pending invites for the user with their matches, newest first."""
+        result = await self.session.execute(
+            select(MatchInvitation, Match)
+            .join(Match, Match.id == MatchInvitation.match_id)
+            .where(
+                MatchInvitation.invited_user_id == user_id,
+                MatchInvitation.status == "pending",
+            )
+            .order_by(MatchInvitation.created_at.desc())
+        )
+        return list(result.all())
+
+    async def invite(
+        self, *, match_id: uuid.UUID, invited_user_id: uuid.UUID,
+        invited_by_user_id: uuid.UUID,
+    ) -> tuple[MatchInvitation, bool]:
+        """Invite once; an existing row (even declined, which re-opens) is
+        returned instead of duplicating. True concurrent races surface as
+        IntegrityError for the service to map to 409 (client retries read)."""
+        existing = await self.get(
+            match_id=match_id, invited_user_id=invited_user_id
+        )
+        if existing is not None:
+            if existing.status == "declined":
+                existing.status = "pending"
+                await self.session.flush()
+            return existing, False
+        row = MatchInvitation(
+            match_id=match_id,
+            invited_user_id=invited_user_id,
+            invited_by_user_id=invited_by_user_id,
+            status="pending",
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row, True
+
+    async def set_status(
+        self, *, match_id: uuid.UUID, invited_user_id: uuid.UUID, status: str
+    ) -> None:
+        if status not in ("pending", "accepted", "declined"):
+            raise ValueError("unknown invitation status")
+        row = await self.get(match_id=match_id, invited_user_id=invited_user_id)
+        if row is not None and row.status != status:
+            row.status = status
+            await self.session.flush()
+
+
+class MatchRewardRepository(BaseRepository[MatchReward]):
+    """Exactly-once multiplayer XP ledger. No commits; services own txns."""
+
+    async def award_once(
+        self, *, match_id: uuid.UUID, user_id: uuid.UUID, kind: str, xp: int
+    ) -> bool:
+        """Insert one ledger row; True only for the first insert. Retries and
+        concurrent finalizations collapse via ON CONFLICT DO NOTHING."""
+        if kind not in ("participation", "win"):
+            raise ValueError("kind must be participation or win")
+        _require_non_negative_int(xp, field="xp")
+        result = await self.session.execute(
+            pg_insert(MatchReward)
+            .values(match_id=match_id, user_id=user_id, kind=kind, xp=xp)
+            .on_conflict_do_nothing(
+                constraint="uq_match_reward_once"
+            )
+        )
+        await self.session.flush()
+        return result.rowcount == 1
+
+    async def sum_since(
+        self, *, user_id: uuid.UUID, since: datetime
+    ) -> int:
+        """Total match XP credited to the user since a moment (daily cap)."""
+        if not isinstance(since, datetime):
+            raise ValueError("since must be a datetime")
+        result = await self.session.execute(
+            select(func.coalesce(func.sum(MatchReward.xp), 0))
+            .select_from(MatchReward)
+            .where(
+                MatchReward.user_id == user_id,
+                MatchReward.awarded_at >= since,
+            )
+        )
+        return result.scalar_one_or_none() or 0
+
+    async def sum_since_many(
+        self, *, user_ids: list[uuid.UUID], since: datetime
+    ) -> dict[uuid.UUID, int]:
+        """Per-user credited totals in one grouped query (finalize scale)."""
+        if not isinstance(since, datetime):
+            raise ValueError("since must be a datetime")
+        if not user_ids:
+            return {}
+        result = await self.session.execute(
+            select(MatchReward.user_id, func.coalesce(func.sum(MatchReward.xp), 0))
+            .where(
+                MatchReward.user_id.in_(user_ids),
+                MatchReward.awarded_at >= since,
+            )
+            .group_by(MatchReward.user_id)
+        )
+        return {user_id: total for user_id, total in result.all()}

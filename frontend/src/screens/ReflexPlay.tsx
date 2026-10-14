@@ -12,6 +12,7 @@ import {
   type LocalRound,
 } from '../reflexutil';
 import { ErrorNotice, Loading } from '../components/ui';
+import { MatchSubmitBanner } from '../components/MatchSubmit';
 import { haptic } from '../telegram';
 
 type Phase = 'waiting' | 'active';
@@ -21,11 +22,15 @@ export function ReflexPlayScreen({
   sessionId,
   onExit,
   onReplay,
+  matchId,
+  onBackToMatch,
 }: {
   ctx: WebAppContext;
   sessionId: string;
   onExit: () => void;
   onReplay: (sessionId: string) => void;
+  matchId?: string | null;
+  onBackToMatch?: () => void;
 }) {
   const [view, setView] = useState<ReflexState | null>(null);
   const [best, setBest] = useState<number | null>(null);
@@ -260,6 +265,9 @@ export function ReflexPlayScreen({
             {replaying ? 'Starting…' : '↻ Play again'}
           </button>
         </div>
+        {matchId && onBackToMatch && (
+          <MatchSubmitBanner ctx={ctx} matchId={matchId} sessionId={sessionId} onBackToMatch={onBackToMatch} />
+        )}
       </div>
     );
   }

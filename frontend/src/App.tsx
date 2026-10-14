@@ -10,10 +10,15 @@ import { ReflexPlayScreen } from './screens/ReflexPlay';
 import { LeaderboardScreen } from './screens/Leaderboard';
 import { ProfileScreen } from './screens/Profile';
 import { HistoryScreen } from './screens/History';
+import { MatchesScreen } from './screens/Matches';
+import { MatchDetailScreen } from './screens/MatchDetail';
 
 type Route =
   | { name: Exclude<Tab, 'play'> }
   | { name: 'play'; sessionId: string; gameId: string }
+  | { name: 'play-match'; matchId: string; sessionId: string; gameId: string }
+  | { name: 'matches' }
+  | { name: 'match'; matchId: string }
   | { name: 'history' };
 
 const PENDING_REFERRAL_KEY = 'brainrush:pendingReferral';
@@ -47,18 +52,25 @@ export default function App() {
   const ctx: WebAppContext = useMemo(() => initWebApp(), []);
   const [route, setRoute] = useState<Route>({ name: 'home' });
   const [referralNotice, setReferralNotice] = useState<{ kind: 'success' | 'ineligible'; text: string } | null>(null);
+  const [matchNotice, setMatchNotice] = useState<string | null>(null);
+  // `m-` launch params are match invites, never referral codes (referral
+  // alphabet excludes `-`). Match joins happen once per launch and are
+  // never persisted, so a completed match can never reopen by accident.
+  const startParam = ctx.startParam;
+  const matchToken = startParam && startParam.startsWith('m-') ? startParam : null;
+  const referralParam = startParam && !startParam.startsWith('m-') ? startParam : null;
   // A referral code pending attribution. Screens that auto-register
   // (dashboard/history via get_verified_identity) must NOT run before the
   // claim settles: registration first would make a genuine newcomer look
   // like an existing user and forfeit both bonuses permanently.
-  const [pendingCode] = useState<string | null>(() => ctx.startParam ?? readPendingReferral());
+  const [pendingCode] = useState<string | null>(() => referralParam ?? readPendingReferral());
   const [claimDone, setClaimDone] = useState(pendingCode === null);
   const [claimFailed, setClaimFailed] = useState(false);
   const [claimAttempt, setClaimAttempt] = useState(0);
 
   useEffect(() => {
     if (!pendingCode || !ctx.initData || claimDone) return;
-    if (ctx.startParam) writePendingReferral(ctx.startParam);
+    if (referralParam) writePendingReferral(referralParam);
     let cancelled = false;
     api
       .referralClaim(ctx.initData, pendingCode)
@@ -118,7 +130,43 @@ export default function App() {
     );
   }
 
-  const tab: Tab = route.name === 'play' ? 'games' : route.name === 'history' ? 'profile' : route.name;
+  // Match invite auto-join: once per launch, after any referral claim
+  // settles (a newcomer opening a match link has no referral pending).
+  // The token is consumed immediately and never stored.
+  const [matchJoined, setMatchJoined] = useState(matchToken === null);
+  useEffect(() => {
+    if (!matchToken || !ctx.initData || matchJoined || !claimDone) return;
+    let cancelled = false;
+    api
+      .matchJoinByToken(ctx.initData, matchToken)
+      .then((v) => {
+        if (cancelled) return;
+        setMatchJoined(true);
+        setRoute({ name: 'match', matchId: v.match_id });
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setMatchJoined(true);
+        setMatchNotice(
+          e instanceof ApiError && e.status === 404
+            ? 'That match invite is invalid or expired.'
+            : e instanceof Error
+              ? e.message
+              : 'Could not join the match.',
+        );
+        setRoute({ name: 'matches' });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ctx.initData, matchToken, matchJoined, claimDone]);
+
+  const tab: Tab =
+    route.name === 'play' || route.name === 'play-match' || route.name === 'matches' || route.name === 'match'
+      ? 'games'
+      : route.name === 'history'
+        ? 'profile'
+        : route.name;
 
   // While a referral claim is unsettled, show a splash instead of the app:
   // any screen would auto-register via /api/me and void a newcomer's bonus.
@@ -202,6 +250,18 @@ export default function App() {
           </div>
         )}
 
+        {matchNotice && (
+          <div className="mb-3 rounded-2xl border border-amber-400/30 bg-amber-500/10 p-3 text-center" role="status">
+            <p className="text-sm font-semibold text-white">{matchNotice}</p>
+            <button
+              onClick={() => setMatchNotice(null)}
+              className="mt-1 text-xs font-bold text-slate-400 active:text-slate-200"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {route.name === 'home' && (
           <HomeScreen
             ctx={ctx}
@@ -210,7 +270,59 @@ export default function App() {
           />
         )}
         {route.name === 'games' && (
-          <GamesScreen ctx={ctx} onStart={(gameId, sessionId) => setRoute({ name: 'play', gameId, sessionId })} />
+          <GamesScreen
+            ctx={ctx}
+            onStart={(gameId, sessionId) => setRoute({ name: 'play', gameId, sessionId })}
+            onOpenMatch={(matchId) => setRoute({ name: 'match', matchId })}
+            onOpenMatches={() => setRoute({ name: 'matches' })}
+          />
+        )}
+        {route.name === 'matches' && (
+          <MatchesScreen ctx={ctx} onOpen={(matchId) => setRoute({ name: 'match', matchId })} />
+        )}
+        {route.name === 'match' && (
+          <MatchDetailScreen
+            ctx={ctx}
+            matchId={route.matchId}
+            onExit={() => setRoute({ name: 'matches' })}
+            onPlay={(gameId, difficulty, mId) => {
+              api
+                .start(ctx.initData, gameId, difficulty)
+                .then((s) => setRoute({ name: 'play-match', matchId: mId, sessionId: s.session_id, gameId }))
+                .catch((e: Error) => setMatchNotice(e.message));
+            }}
+          />
+        )}
+        {route.name === 'play-match' && route.gameId === 'color_sequence' && (
+          <ColorPlayScreen
+            ctx={ctx}
+            sessionId={route.sessionId}
+            matchId={route.matchId}
+            onBackToMatch={() => setRoute({ name: 'match', matchId: route.matchId })}
+            onExit={() => setRoute({ name: 'match', matchId: route.matchId })}
+            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'color_sequence', sessionId })}
+          />
+        )}
+        {route.name === 'play-match' && route.gameId === 'reflex_rush' && (
+          <ReflexPlayScreen
+            key={route.sessionId}
+            ctx={ctx}
+            sessionId={route.sessionId}
+            matchId={route.matchId}
+            onBackToMatch={() => setRoute({ name: 'match', matchId: route.matchId })}
+            onExit={() => setRoute({ name: 'match', matchId: route.matchId })}
+            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'reflex_rush', sessionId })}
+          />
+        )}
+        {route.name === 'play-match' && route.gameId !== 'color_sequence' && route.gameId !== 'reflex_rush' && (
+          <PlayScreen
+            ctx={ctx}
+            sessionId={route.sessionId}
+            matchId={route.matchId}
+            onBackToMatch={() => setRoute({ name: 'match', matchId: route.matchId })}
+            onExit={() => setRoute({ name: 'match', matchId: route.matchId })}
+            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'number_guessing', sessionId })}
+          />
         )}
         {route.name === 'play' && route.gameId === 'color_sequence' && (
           <ColorPlayScreen
@@ -245,7 +357,7 @@ export default function App() {
           <HistoryScreen ctx={ctx} onBack={() => setRoute({ name: 'profile' })} />
         )}
       </div>
-      {route.name !== 'play' && (
+      {route.name !== 'play' && route.name !== 'play-match' && route.name !== 'match' && (
         <BottomNav tab={tab} onChange={(t) => setRoute({ name: t })} />
       )}
     </div>

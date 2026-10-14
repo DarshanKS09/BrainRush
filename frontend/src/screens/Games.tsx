@@ -4,14 +4,19 @@ import { difficultyDisplayName, difficultySub, reflexWaitText } from '../gameuti
 import type { WebAppContext } from '../telegram';
 import { GameCard } from '../components/GameCard';
 import { ErrorNotice, Loading, SectionTitle } from '../components/ui';
+import { CreateMatchForm } from './Matches';
 import { haptic } from '../telegram';
 
 export function GamesScreen({
   ctx,
   onStart,
+  onOpenMatch,
+  onOpenMatches,
 }: {
   ctx: WebAppContext;
   onStart: (gameId: string, sessionId: string) => void;
+  onOpenMatch?: (matchId: string) => void;
+  onOpenMatches?: () => void;
 }) {
   const [games, setGames] = useState<GameInfo[]>([]);
   const [error, setError] = useState('');
@@ -49,6 +54,13 @@ export function GamesScreen({
   return (
     <div className="space-y-3">
       <SectionTitle>Game lobby</SectionTitle>
+      <button
+        onClick={onOpenMatches ?? (() => {})}
+        className="w-full rounded-2xl bg-gradient-to-r from-neon-purple/20 to-neon-cyan/20 px-3 py-2.5 text-left ring-1 ring-neon-cyan/30 active:scale-[0.99]"
+      >
+        <span className="text-sm font-bold text-white">⚔️ Multiplayer matches</span>
+        <span className="block text-xs text-slate-300">1v1 duels, free-for-all, tournaments — invite friends via link</span>
+      </button>
       {games.map((g) => (
         <GameCard key={g.id} game={g} onPlay={(game) => { setPicked(game); setStartError(''); }} />
       ))}
@@ -63,6 +75,9 @@ export function GamesScreen({
           onBack={() => setPicked(null)}
           onBegin={begin}
         />
+      )}
+      {picked?.playable && (
+        <CreateMatchForm ctx={ctx} gameId={picked.id} onCreated={onOpenMatch ?? (() => {})} />
       )}
     </div>
   );

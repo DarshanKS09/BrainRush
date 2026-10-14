@@ -74,6 +74,54 @@ class Settings(BaseSettings):
         default="",
         description="Mini App short name from BotFather, for referral links",
     )
+    MATCH_COMPLETION_XP: int = Field(
+        default=10, ge=0, le=100000,
+        description="XP per finished multiplayer match participant",
+    )
+    MATCH_WIN_BONUS: int = Field(
+        default=10, ge=0, le=100000,
+        description="Extra XP for multiplayer match winner(s)",
+    )
+    MATCH_DAILY_XP_CAP: int = Field(
+        default=500, ge=0, le=1000000,
+        description="Max multiplayer XP per user per UTC day (anti-farming)",
+    )
+    MATCH_LOBBY_TTL_HOURS: int = Field(
+        default=24, ge=1, le=720,
+        description="Lobby auto-expiry: unstarted matches older than this",
+    )
+    MATCH_INVITE_TTL_DAYS: int = Field(
+        default=7, ge=1, le=90,
+        description="Share-link invite token validity window",
+    )
+    MATCH_DEFAULT_MINUTES: int = Field(
+        default=60, ge=5, le=1440,
+        description="Authoritative match deadline length when adapters set none",
+    )
+    MATCH_COMPLETION_XP: int = Field(
+        default=10, ge=0, le=100000,
+        description="XP awarded to each finished multiplayer match participant",
+    )
+    MATCH_WIN_BONUS: int = Field(
+        default=10, ge=0, le=100000,
+        description="Extra XP for multiplayer match winner(s)",
+    )
+    MATCH_DAILY_XP_CAP: int = Field(
+        default=500, ge=0, le=1000000,
+        description="Max multiplayer XP per user per UTC day (anti-farming)",
+    )
+    MATCH_LOBBY_TTL_HOURS: int = Field(
+        default=24, ge=1, le=720,
+        description="Lobby auto-expiry: unstarted matches older than this",
+    )
+    MATCH_INVITE_TTL_DAYS: int = Field(
+        default=7, ge=1, le=90,
+        description="Share-link invite token validity window",
+    )
+    MATCH_DEFAULT_MINUTES: int = Field(
+        default=60, ge=5, le=1440,
+        description="Authoritative match deadline length when adapters set none",
+    )
 
     @field_validator("BOT_TOKEN")
     @classmethod
