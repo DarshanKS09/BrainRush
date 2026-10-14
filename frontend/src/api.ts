@@ -130,6 +130,26 @@ export interface ReflexState {
   result: ReflexResult | null;
 }
 
+export interface ReferralLink {
+  code: string;
+  link: string | null;
+  referrer_xp: number;
+  referred_xp: number;
+}
+
+export interface ReferralClaim {
+  credited: boolean;
+  already: boolean;
+  code: string;
+  referrer_xp: number;
+  referred_xp: number;
+}
+
+export interface ReferralStats {
+  referrals: number;
+  referral_xp: number;
+}
+
 export interface HistoryItem {
   session_id: string;
   game_type: string;
@@ -229,6 +249,15 @@ export const api = {
       `/api/leaderboard?limit=${limit}&offset=${offset}`,
       initData,
     ),
+  referralMine: (initData: string) =>
+    request<ReferralLink>('/api/referrals/mine', initData),
+  referralClaim: (initData: string, code: string) =>
+    request<ReferralClaim>('/api/referrals/claim', initData, {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+  referralStats: (initData: string) =>
+    request<ReferralStats>('/api/referrals/stats', initData),
 };
 
 export function newClientGuessId(): string {

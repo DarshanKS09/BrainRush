@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { initWebApp, type WebAppContext } from './telegram';
+import { api } from './api';
 import { BottomNav, type Tab } from './components/BottomNav';
 import { HomeScreen } from './screens/Home';
 import { GamesScreen } from './screens/Games';
@@ -16,6 +17,28 @@ type Route =
 export default function App() {
   const ctx: WebAppContext = useMemo(() => initWebApp(), []);
   const [route, setRoute] = useState<Route>({ name: 'home' });
+  const [referralNotice, setReferralNotice] = useState<string | null>(null);
+  const claimTried = useRef(false);
+
+  // First-launch referral attribution: runs once per app load when Telegram
+  // provided a start_param. Safe to repeat across reloads — the backend
+  // credits a newcomer at most once and replays are idempotent.
+  useEffect(() => {
+    if (!ctx.initData || !ctx.startParam || claimTried.current) return;
+    claimTried.current = true;
+    api
+      .referralClaim(ctx.initData, ctx.startParam)
+      .then((r) => {
+        if (r.credited && !r.already) {
+          setReferralNotice(
+            `🎁 Welcome bonus: +${r.referred_xp} XP! Your friend earned +${r.referrer_xp} XP.`,
+          );
+        }
+      })
+      .catch(() => {
+        /* ineligible/expired: stay silent, normal app flow continues */
+      });
+  }, [ctx]);
 
   if (!ctx.initData && !ctx.isDevMock) {
     return (
@@ -54,6 +77,18 @@ export default function App() {
             </span>
           )}
         </div>
+
+        {referralNotice && (
+          <div className="mb-3 rounded-2xl border border-neon-cyan/30 bg-cyan-500/10 p-3 text-center" role="status">
+            <p className="text-sm font-semibold text-white">{referralNotice}</p>
+            <button
+              onClick={() => setReferralNotice(null)}
+              className="mt-1 text-xs font-bold text-slate-400 active:text-slate-200"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {route.name === 'home' && (
           <HomeScreen

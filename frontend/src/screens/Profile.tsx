@@ -3,6 +3,7 @@ import { api, type DashboardData, type HistoryItem } from '../api';
 import { formatDate, outcomeLabel } from '../gameutil';
 import type { WebAppContext } from '../telegram';
 import { ErrorNotice, Loading, SectionTitle, StatTile, XpBar } from '../components/ui';
+import { ReferralPanel } from '../components/ReferralPanel';
 
 export function ProfileScreen({ ctx }: { ctx: WebAppContext }) {
   const [data, setData] = useState<DashboardData | null>(null);
@@ -77,6 +78,8 @@ export function ProfileScreen({ ctx }: { ctx: WebAppContext }) {
           </ul>
         )}
       </div>
+
+      <ReferralPanel ctx={ctx} />
     </div>
   );
 }

@@ -4,10 +4,16 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
-from brainrush.api.deps import SessionDep, get_verified_identity
+from brainrush.api.deps import (
+    SessionDep,
+    get_verified_identity,
+    get_verified_telegram_identity,
+)
+from brainrush.config import Settings
+from brainrush.services.referrals import ReferralService
 from brainrush.services.miniapp import (
     CATALOG,
     DIFFICULTIES,
@@ -47,6 +53,15 @@ class ReflexFinishRequest(BaseModel):
 
 
 IdentityDep = Annotated[dict, Depends(get_verified_identity)]
+TelegramIdentityDep = Annotated[dict, Depends(get_verified_telegram_identity)]
+
+
+def _referrals(session, settings: Settings) -> ReferralService:
+    return ReferralService(
+        session,
+        referrer_xp=settings.REFERRER_XP,
+        referred_xp=settings.REFERRED_XP,
+    )
 
 
 def _service(session) -> MiniappGameService:
@@ -206,3 +221,53 @@ async def leaderboard(
     return await _service(session).leaderboard(
         limit=limit, offset=offset, user_id=identity["user_id"]
     )
+
+
+class ClaimRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=32)
+
+
+@router.get("/referrals/mine")
+async def referral_link(
+    request: Request, identity: IdentityDep, session: SessionDep
+) -> dict:
+    """Stable personal code + deep link (link is null until the bot/app
+    names are configured server-side; the code always works)."""
+    settings: Settings = request.app.state.settings
+    data = await _referrals(session, settings).build_link(
+        user_id=identity["user_id"],
+        bot_username=settings.TELEGRAM_BOT_USERNAME,
+        app_short_name=settings.MINIAPP_SHORT_NAME,
+    )
+    return {
+        **data,
+        "referrer_xp": settings.REFERRER_XP,
+        "referred_xp": settings.REFERRED_XP,
+    }
+
+
+@router.post("/referrals/claim")
+async def referral_claim(
+    body: ClaimRequest,
+    request: Request,
+    telegram: TelegramIdentityDep,
+    session: SessionDep,
+) -> dict:
+    """Attribute a newcomer via referral code. Uses the verified Telegram
+    identity only — never any id from the URL or body. Idempotent: a repeat
+    claim by the same newcomer returns the stored credit."""
+    settings: Settings = request.app.state.settings
+    return await _referrals(session, settings).claim(
+        code=body.code,
+        telegram_id=telegram["telegram_id"],
+        username=telegram["username"],
+        display_name=telegram["display_name"],
+    )
+
+
+@router.get("/referrals/stats")
+async def referral_stats(
+    request: Request, identity: IdentityDep, session: SessionDep
+) -> dict:
+    settings: Settings = request.app.state.settings
+    return await _referrals(session, settings).stats(user_id=identity["user_id"])

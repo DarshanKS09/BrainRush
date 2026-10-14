@@ -57,3 +57,25 @@ async def get_verified_identity(
     )
     request.state.telegram_id = identity["telegram_id"]
     return {"user_id": user.id, **identity}
+
+
+async def get_verified_telegram_identity(
+    request: Request,
+    init_data: Annotated[str, Header(alias="X-Telegram-Init-Data")] = "",
+) -> dict:
+    """Verify initData WITHOUT touching the database.
+
+    Used by the referral claim endpoint, which must distinguish genuinely
+    new identities from existing ones inside its own transaction. Every
+    other route keeps using get_verified_identity (verify + register).
+    """
+    settings: Settings = get_settings(request)
+    identity = parse_and_verify(
+        init_data,
+        bot_token=settings.BOT_TOKEN,
+        max_age_seconds=settings.INIT_DATA_MAX_AGE,
+        allow_dev=settings.ALLOW_DEV_AUTH,
+        dev_telegram_id=settings.DEV_AUTH_TELEGRAM_ID,
+    )
+    request.state.telegram_id = identity["telegram_id"]
+    return identity

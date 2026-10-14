@@ -27,6 +27,8 @@ from brainrush.db.models import (
     GameResult,
     GameSession,
     PlayerProfile,
+    ReferralAttribution,
+    ReferralCode,
     User,
     WebappGameState,
 )
@@ -579,3 +581,98 @@ class WebappStateRepository(BaseRepository[WebappGameState]):
     async def delete(self, row: WebappGameState) -> None:
         await self.session.delete(row)
         await self.session.flush()
+
+
+def _require_code(value: Any) -> str:
+    import re
+
+    if not isinstance(value, str):
+        raise ValueError("referral code must be a string")
+    code = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9]{4,32}", code):
+        raise ValueError("invalid referral code")
+    return code
+
+
+def _new_referral_code() -> str:
+    import secrets
+    import string
+
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(10))
+
+
+class ReferralRepository(BaseRepository[ReferralCode]):
+    """Referral codes + attributions. No commits; services own txns."""
+
+    async def get_or_create_code(self, *, user_id: uuid.UUID) -> tuple[ReferralCode, bool]:
+        """Stable per-user code: repeated calls never mint extras."""
+        result = await self.session.execute(
+            select(ReferralCode).where(ReferralCode.referrer_user_id == user_id)
+        )
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            return existing, False
+        # 62^10 space makes collisions practically impossible; a leftover
+        # IntegrityError propagates and rolls back via the service txn.
+        row = ReferralCode(code=_new_referral_code(), referrer_user_id=user_id)
+        self.session.add(row)
+        await self.session.flush()
+        return row, True
+
+    async def get_by_code(self, *, code: str) -> ReferralCode | None:
+        code = _require_code(code)
+        result = await self.session.execute(
+            select(ReferralCode).where(ReferralCode.code == code)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_attribution_for(
+        self, *, referred_user_id: uuid.UUID
+    ) -> ReferralAttribution | None:
+        result = await self.session.execute(
+            select(ReferralAttribution).where(
+                ReferralAttribution.referred_user_id == referred_user_id
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def record_attribution(
+        self,
+        *,
+        code: str,
+        referrer_user_id: uuid.UUID,
+        referred_user_id: uuid.UUID,
+        referrer_xp: int,
+        referred_xp: int,
+    ) -> ReferralAttribution:
+        """Insert one attribution row. Unique(referred_user_id) makes a second
+        claim for the same newcomer fail atomically (IntegrityError)."""
+        _require_non_negative_int(referrer_xp, field="referrer_xp")
+        _require_non_negative_int(referred_xp, field="referred_xp")
+        row = ReferralAttribution(
+            code=code,
+            referrer_user_id=referrer_user_id,
+            referred_user_id=referred_user_id,
+            referrer_xp=referrer_xp,
+            referred_xp=referred_xp,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def count_credited(self, *, referrer_user_id: uuid.UUID) -> int:
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(ReferralAttribution)
+            .where(ReferralAttribution.referrer_user_id == referrer_user_id)
+        )
+        return result.scalar_one_or_none() or 0
+
+    async def sum_referrer_xp(self, *, referrer_user_id: uuid.UUID) -> int:
+        result = await self.session.execute(
+            select(func.coalesce(func.sum(ReferralAttribution.referrer_xp), 0))
+            .select_from(ReferralAttribution)
+            .where(ReferralAttribution.referrer_user_id == referrer_user_id)
+        )
+        return result.scalar_one_or_none() or 0

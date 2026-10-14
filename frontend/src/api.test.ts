@@ -66,4 +66,20 @@ describe('api client', () => {
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ color: 2, client_move_id: 'm-7' });
   });
+
+  it('fetches referral link and stats', async () => {
+    const fetch = mockFetch(200, { code: 'AB12CD34EF', link: 'https://t.me/x', referrer_xp: 100, referred_xp: 25 });
+    const mine = await api.referralMine('data');
+    expect(mine.code).toBe('AB12CD34EF');
+    const [url] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(url.endsWith('/api/referrals/mine')).toBe(true);
+  });
+
+  it('claims referrals with code only (no user ids)', async () => {
+    const fetch = mockFetch(200, { credited: true, already: false, code: 'AB12CD34EF', referrer_xp: 100, referred_xp: 25 });
+    const out = await api.referralClaim('data', 'AB12CD34EF');
+    expect(out.credited).toBe(true);
+    const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ code: 'AB12CD34EF' });
+  });
 });

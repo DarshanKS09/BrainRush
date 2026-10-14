@@ -1,6 +1,7 @@
 """Initial production-ready schema (tables only, no game logic).
 
-Tables: users, player_profiles, game_sessions, game_results, daily_activities.
+Tables: users, player_profiles, game_sessions, game_results, daily_activities,
+referral_codes, referral_attributions.
 Primary keys are UUID; Telegram user IDs stay BIGINT. All timestamps are
 timezone-aware. Status/outcome use CHECK constraints instead of PG ENUMs so
 future value additions are non-destructive (no ALTER TYPE ... ADD VALUE).
@@ -182,6 +183,43 @@ class DailyActivity(Base):
     )
 
     user: Mapped[User] = relationship(back_populates="activities")
+
+
+class ReferralCode(Base):
+    """Stable per-user referral code. One row per referrer, created on demand."""
+
+    __tablename__ = "referral_codes"
+
+    code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    referrer_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        _tz_now(), server_default=func.now(), nullable=False
+    )
+
+
+class ReferralAttribution(Base):
+    """One credited referral per referred user. Unique referred_user_id makes
+    double-claims (including races) impossible at the database level."""
+
+    __tablename__ = "referral_attributions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    code: Mapped[str] = mapped_column(
+        ForeignKey("referral_codes.code", ondelete="RESTRICT"), nullable=False
+    )
+    referrer_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    referred_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    referrer_xp: Mapped[int] = mapped_column(Integer, nullable=False)
+    referred_xp: Mapped[int] = mapped_column(Integer, nullable=False)
+    credited_at: Mapped[datetime] = mapped_column(
+        _tz_now(), server_default=func.now(), nullable=False
+    )
 
 
 class WebappGameState(Base):

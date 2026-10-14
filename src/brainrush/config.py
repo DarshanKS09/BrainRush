@@ -58,6 +58,22 @@ class Settings(BaseSettings):
         default=0,
         description="Telegram user id used only when ALLOW_DEV_AUTH is true",
     )
+    REFERRER_XP: int = Field(
+        default=100, ge=0, le=100000,
+        description="XP awarded to the referrer for each qualified referral",
+    )
+    REFERRED_XP: int = Field(
+        default=25, ge=0, le=100000,
+        description="XP awarded to a newly referred user",
+    )
+    TELEGRAM_BOT_USERNAME: str = Field(
+        default="",
+        description="Bot username without @, for building referral deep links",
+    )
+    MINIAPP_SHORT_NAME: str = Field(
+        default="",
+        description="Mini App short name from BotFather, for referral links",
+    )
 
     @field_validator("BOT_TOKEN")
     @classmethod

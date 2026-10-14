@@ -15,6 +15,8 @@ export interface WebAppContext {
   isTelegram: boolean;
   /** Development mock flag: true only for local DEV builds with ?devuser=. */
   isDevMock: boolean;
+  /** Referral code from the Mini App launch context (start_param), if any. */
+  startParam: string | null;
 }
 
 declare global {
@@ -22,10 +24,11 @@ declare global {
     Telegram?: {
       WebApp?: {
         initData: string;
-        initDataUnsafe?: { user?: TelegramUser };
+        initDataUnsafe?: { user?: TelegramUser; start_param?: string };
         colorScheme?: string;
         ready: () => void;
         expand: () => void;
+        openTelegramLink?: (url: string) => void;
         HapticFeedback?: {
           impactOccurred: (style: string) => void;
           notificationOccurred: (type: string) => void;
@@ -54,10 +57,11 @@ export function initWebApp(): WebAppContext {
       displayName: 'Dev Player',
       isTelegram: false,
       isDevMock: true,
+      startParam: null,
     };
   }
   if (!wa) {
-    return { initData: '', user: null, displayName: 'Guest', isTelegram: false, isDevMock: false };
+    return { initData: '', user: null, displayName: 'Guest', isTelegram: false, isDevMock: false, startParam: null };
   }
   try {
     wa.ready();
@@ -68,7 +72,9 @@ export function initWebApp(): WebAppContext {
   const user = wa.initDataUnsafe?.user ?? null;
   const displayName =
     [user?.first_name, user?.last_name].filter(Boolean).join(' ') || user?.username || 'Player';
-  return { initData: wa.initData || '', user, displayName, isTelegram: true, isDevMock: false };
+  const rawParam = wa.initDataUnsafe?.start_param ?? '';
+  const startParam = /^[A-Za-z0-9_-]{1,64}$/.test(rawParam) ? rawParam : null;
+  return { initData: wa.initData || '', user, displayName, isTelegram: true, isDevMock: false, startParam };
 }
 
 export function haptic(kind: 'light' | 'success' | 'error' = 'light'): void {
