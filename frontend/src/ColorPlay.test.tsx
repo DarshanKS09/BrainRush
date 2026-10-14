@@ -322,6 +322,139 @@ describe('ColorPlay', () => {
     });
   });
 
+  it('processes rapid consecutive taps without waiting', async () => {
+    // Level 3 start so both taps stay mid-level (no transition involved).
+    mockedApi.colorState.mockResolvedValue(
+      startedState({ display: [0, 2, 1], level: 3, max_level: 8 }),
+    );
+    await renderStarted();
+    await act(async () => {
+      vi.runAllTimers();
+    });
+    mockedApi.move
+      .mockResolvedValueOnce(
+        startedState({
+          display: [0, 2, 1],
+          level: 3,
+          max_level: 8,
+          position: 1,
+          moves: [{ value: 0, hit: true }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        startedState({
+          display: [0, 2, 1],
+          level: 3,
+          max_level: 8,
+          position: 2,
+          moves: [
+            { value: 0, hit: true },
+            { value: 2, hit: true },
+          ],
+        }),
+      );
+    // Two taps back-to-back: the second must be accepted immediately,
+    // without waiting for the first request or the flash reset.
+    // Display is [Red, Blue, Green]: tap Red (0), then Blue (2).
+    fireEvent.click(screen.getByRole('button', { name: /Red/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Blue/ }));
+    await act(async () => {});
+    expect(mockedApi.move).toHaveBeenCalledTimes(2);
+    const calls = mockedApi.move.mock.calls;
+    expect(calls[0][2]).toBe(0);
+    expect(calls[1][2]).toBe(2);
+    // Distinct idempotency ids per physical tap.
+    expect(calls[0][3]).not.toBe(calls[1][3]);
+    // Still mid-level input phase: no replay, no transition.
+    expect(screen.getByText(/tap 3 of 3/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Red/ })).not.toBeDisabled();
+    expect(screen.queryByText(/Watch carefully/)).not.toBeInTheDocument();
+  });
+
+  it('accepts the same color repeatedly when the sequence requires it', async () => {
+    mockedApi.colorState.mockResolvedValue(
+      startedState({ display: [2, 2, 2], level: 3, max_level: 8 }),
+    );
+    await renderStarted();
+    await act(async () => {
+      vi.runAllTimers();
+    });
+    mockedApi.move
+      .mockResolvedValueOnce(
+        startedState({
+          display: [2, 2, 2], level: 3, max_level: 8, position: 1,
+          moves: [{ value: 2, hit: true }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        startedState({
+          display: [2, 2, 2], level: 3, max_level: 8, position: 2,
+          moves: [
+            { value: 2, hit: true },
+            { value: 2, hit: true },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        startedState({
+          display: [2, 2, 2, 0], level: 4, max_level: 8, position: 0,
+          levels_completed: 1,
+          moves: [
+            { value: 2, hit: true },
+            { value: 2, hit: true },
+            { value: 2, hit: true },
+          ],
+        }),
+      );
+    const blue = screen.getByRole('button', { name: /Blue/ });
+    fireEvent.click(blue);
+    fireEvent.click(blue);
+    fireEvent.click(blue);
+    await act(async () => {});
+    expect(mockedApi.move).toHaveBeenCalledTimes(3);
+    expect(
+      mockedApi.move.mock.calls.every(([, , color]) => color === 2),
+    ).toBe(true);
+    expect(screen.getByText(/Correct! Get ready/)).toBeInTheDocument();
+  });
+
+  it('drops taps queued behind a run-ending tap', async () => {
+    await renderStarted();
+    await act(async () => {
+      vi.runAllTimers();
+    });
+    // Display is [0, 2]: Red is correct, but the run ends on the first tap.
+    mockedApi.move.mockResolvedValue(
+      startedState({
+        finished: true,
+        status: 'completed',
+        result: { outcome: 'loss', score: 0, xp_earned: 0, secret: null },
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Red/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Green/ }));
+    await act(async () => {});
+    // The second tap was buffered behind a terminal response: never sent.
+    expect(mockedApi.move).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Run over!')).toBeInTheDocument();
+  });
+
+  it('abandons in-flight taps cleanly on unmount', async () => {
+    await renderStarted();
+    await act(async () => {
+      vi.runAllTimers();
+    });
+    let resolveMove!: (v: ColorState) => void;
+    mockedApi.move.mockImplementation(
+      () => new Promise((resolve) => { resolveMove = resolve; }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Red/ }));
+    cleanup();
+    await act(async () => {
+      resolveMove(startedState({ position: 1, moves: [{ value: 0, hit: true }] }));
+    });
+  });
+
   it('renders the finished panel with score, XP and best', async () => {
     mockedApi.colorState.mockResolvedValue(
       startedState({

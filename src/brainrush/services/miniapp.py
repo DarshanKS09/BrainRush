@@ -33,13 +33,15 @@ from brainrush.db.repository import (
 )
 from brainrush.game import number_guessing as guessing
 from brainrush.game import color_sequence as colors
+from brainrush.game import reflex_rush as reflex
 from brainrush.game.progression import level_for_xp
 from brainrush.services import utcnow
 
 GAME_TYPE_NUMBER_GUESSING = "number_guessing"
 GAME_TYPE_COLOR_SEQUENCE = "color_sequence"
+GAME_TYPE_REFLEX_RUSH = "reflex_rush"
 
-PLAYABLE_GAME_TYPES = frozenset({GAME_TYPE_NUMBER_GUESSING, GAME_TYPE_COLOR_SEQUENCE})
+PLAYABLE_GAME_TYPES = frozenset({GAME_TYPE_NUMBER_GUESSING, GAME_TYPE_COLOR_SEQUENCE, GAME_TYPE_REFLEX_RUSH})
 
 DIFFICULTIES: dict[str, guessing.NumberGuessingConfig] = {
     "easy": guessing.NumberGuessingConfig(max_attempts=15),
@@ -71,6 +73,21 @@ CATALOG = [
                 "playback_ms": cfg.playback_ms,
             }
             for did, cfg in colors.COLOR_DIFFICULTIES.items()
+        ],
+    },
+    {
+        "id": "reflex_rush",
+        "title": "Reflex Rush",
+        "description": "Wait for green, then tap fast. Five rounds against the clock.",
+        "playable": True,
+        "difficulties": [
+            {
+                "id": did,
+                "max_attempts": cfg.rounds,
+                "wait_min_ms": cfg.wait_min_ms,
+                "wait_max_ms": cfg.wait_max_ms,
+            }
+            for did, cfg in reflex.REFLEX_DIFFICULTIES.items()
         ],
     },
     {
@@ -168,10 +185,31 @@ def _new_color_data(config: colors.ColorSequenceConfig, rng=None) -> dict:
     }
 
 
+def _reflex_public_view(state) -> dict:
+    """Public Reflex Rush state: lobby info only, no timing secrets.
+
+    Reaction timing is measured client-side per round and submitted once
+    at the end, so there is nothing to leak mid-game beyond the config.
+    """
+    return {
+        "session_id": str(state.session_id),
+        "game_type": state.game_type,
+        "difficulty": state.difficulty,
+        "max_attempts": state.max_attempts,
+        "rounds_total": state.max_attempts,
+        "rounds_played": 0,
+        "status": "started",
+        "finished": False,
+        "result": None,
+    }
+
+
 def _active_view(state) -> dict:
     """Public view for a resumed game, dispatched by game type."""
     if state.game_type == GAME_TYPE_COLOR_SEQUENCE:
         return _color_public_view(state, dict(state.guesses or {}))
+    if state.game_type == GAME_TYPE_REFLEX_RUSH:
+        return _reflex_public_view(state)
     return _public_view(state, list(state.guesses or []))
 
 
@@ -183,6 +221,15 @@ def _completed_view(session_row: GameSession, result_row, guesses: list[dict]) -
             for g in guesses
             if isinstance(g, dict)
         ]
+    elif meta.get("game") == GAME_TYPE_REFLEX_RUSH:
+        rendered = [
+            {
+                "reaction_ms": g.get("reaction_ms"),
+                "false_start": bool(g.get("false_start", False)),
+            }
+            for g in guesses
+            if isinstance(g, dict)
+        ]
     else:
         rendered = [
             {"value": g["value"] if isinstance(g, dict) else g,
@@ -190,6 +237,19 @@ def _completed_view(session_row: GameSession, result_row, guesses: list[dict]) -
                            meta.get("secret", 0))}
             for g in guesses
         ]
+    result: dict = {
+        "outcome": result_row.outcome,
+        "score": result_row.score,
+        "xp_earned": result_row.xp_earned,
+        "secret": meta.get("secret"),
+    }
+    if meta.get("game") == GAME_TYPE_REFLEX_RUSH:
+        result.update({
+            "avg_ms": meta.get("avg_ms"),
+            "best_ms": meta.get("best_ms"),
+            "false_starts": meta.get("false_starts", 0),
+            "rounds": rendered,
+        })
     return {
         "session_id": str(session_row.id),
         "game_type": meta.get("game", GAME_TYPE_NUMBER_GUESSING),
@@ -200,12 +260,7 @@ def _completed_view(session_row: GameSession, result_row, guesses: list[dict]) -
         "guesses": rendered,
         "status": session_row.status,
         "finished": True,
-        "result": {
-            "outcome": result_row.outcome,
-            "score": result_row.score,
-            "xp_earned": result_row.xp_earned,
-            "secret": meta.get("secret"),
-        },
+        "result": result,
     }
 
 
@@ -231,6 +286,11 @@ class MiniappGameService:
                 raise ValueError(
                     f"difficulty must be one of {sorted(colors.COLOR_DIFFICULTIES)}"
                 )
+        elif game_type == GAME_TYPE_REFLEX_RUSH:
+            if difficulty not in reflex.REFLEX_DIFFICULTIES:
+                raise ValueError(
+                    f"difficulty must be one of {sorted(reflex.REFLEX_DIFFICULTIES)}"
+                )
         else:
             _config_for(difficulty)  # fail fast, before any DB work
         async with self.session.begin():
@@ -244,6 +304,10 @@ class MiniappGameService:
             )
             if game_type == GAME_TYPE_COLOR_SEQUENCE:
                 return await self._start_color(
+                    user_id=user_id, db_row=db_row, difficulty=difficulty
+                )
+            if game_type == GAME_TYPE_REFLEX_RUSH:
+                return await self._start_reflex(
                     user_id=user_id, db_row=db_row, difficulty=difficulty
                 )
             config = _config_for(difficulty)
@@ -280,6 +344,107 @@ class MiniappGameService:
         await self.session.flush()
         return _color_public_view(state, data)
 
+    async def _start_reflex(self, *, user_id, db_row, difficulty: str) -> dict:
+        try:
+            config = reflex.REFLEX_DIFFICULTIES[difficulty]
+        except KeyError:
+            raise ValueError(
+                f"difficulty must be one of {sorted(reflex.REFLEX_DIFFICULTIES)}"
+            ) from None
+        # Reaction timing is measured client-side; the server stores no
+        # secret. `secret` is NOT NULL so it holds 0 (unused); per-round
+        # times arrive once via finish_reflex and are validated there.
+        state = await self.states.create(
+            user_id=user_id,
+            session_id=db_row.id,
+            game_type=GAME_TYPE_REFLEX_RUSH,
+            difficulty=difficulty,
+            secret=0,
+            max_attempts=config.rounds,
+        )
+        return _reflex_public_view(state)
+
+    async def finish_reflex(
+        self,
+        *,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID,
+        rounds: list[dict],
+        client_submission_id: str,
+    ) -> dict:
+        """Submit the final 5-round Reflex Rush result.
+
+        Score and XP are computed server-side from the submitted times;
+        client values are validated, never trusted for XP. Duplicate
+        submissions (same or different id, e.g. retries) return the stored
+        completed view without awarding XP twice: the state row is deleted
+        in the same transaction as the result, so a replay hits
+        _replay_or_missing.
+        """
+        if (not isinstance(client_submission_id, str)
+                or not client_submission_id.strip()):
+            raise ValueError("client_submission_id must be a non-empty string")
+        async with self.session.begin():
+            state = await self.states.get_for_update(session_id=session_id)
+            if state is None or state.user_id != user_id:
+                return await self._replay_or_missing(session_id, user_id)
+            if state.game_type != GAME_TYPE_REFLEX_RUSH:
+                raise ValueError("this game uses its own finish endpoint")
+            try:
+                config = reflex.REFLEX_DIFFICULTIES[state.difficulty]
+            except KeyError:
+                raise ValueError("stored difficulty is invalid") from None
+            try:
+                normalized = reflex.validate_rounds(rounds, config)
+            except ValueError as exc:
+                raise ValueError(str(exc)) from None
+            return await self._complete_reflex(
+                state, normalized, config=config
+            )
+
+    async def _complete_reflex(self, state, rounds, *, config):
+        from brainrush.services import utcnow as _utcnow
+
+        moment = _utcnow()
+        agg = reflex.aggregate(rounds, config)
+        metadata = {
+            "game": GAME_TYPE_REFLEX_RUSH,
+            "difficulty": state.difficulty,
+            "rounds": list(rounds),
+            "avg_ms": agg["avg_ms"],
+            "best_ms": agg["best_ms"],
+            "false_starts": agg["false_starts"],
+            "valid_taps": agg["valid_taps"],
+        }
+        session_row = await self.sessions.finish(
+            session_id=state.session_id,
+            status="completed",
+            score=agg["score"],
+            ended_at=moment,
+            duration_seconds=None,
+        )
+        result_row = await self.results.record(
+            session_id=state.session_id,
+            score=agg["score"],
+            outcome="win" if agg["won"] else "loss",
+            xp_earned=agg["xp"],
+            metadata=metadata,
+        )
+        profile = await self.profiles.record_game(
+            user_id=state.user_id,
+            xp_earned=agg["xp"],
+            won=bool(agg["won"]),
+            new_level=None,
+        )
+        await self.profiles.set_level(
+            user_id=state.user_id, level=level_for_xp(profile.total_xp)
+        )
+        await self.activities.add_play(
+            user_id=state.user_id, day=moment.date(), xp_earned=agg["xp"]
+        )
+        await self.states.delete(state)
+        return _completed_view(session_row, result_row, list(rounds))
+
     async def guess(
         self,
         *,
@@ -298,7 +463,7 @@ class MiniappGameService:
                 # result when owned+completed, else 404 without leaking.
                 return await self._replay_or_missing(session_id, user_id)
             if state.game_type != GAME_TYPE_NUMBER_GUESSING:
-                raise ValueError("this game uses the move endpoint, not guesses")
+                raise ValueError("this game uses the move/finish endpoint, not guesses")
             config = _config_for(state.difficulty)
             try:
                 guessing.parse_guess(str(value), config)
@@ -393,7 +558,7 @@ class MiniappGameService:
             if state is None or state.user_id != user_id:
                 return await self._replay_or_missing(session_id, user_id)
             if state.game_type != GAME_TYPE_COLOR_SEQUENCE:
-                raise ValueError("this game uses the guess endpoint, not moves")
+                raise ValueError("this game uses the guess/finish endpoint, not moves")
             try:
                 config = colors.COLOR_DIFFICULTIES[state.difficulty]
             except KeyError:
@@ -502,6 +667,11 @@ class MiniappGameService:
                 g for g in meta.get("guesses", [])
                 if isinstance(g, dict) and "value" in g
             ]
+        elif meta.get("game") == GAME_TYPE_REFLEX_RUSH:
+            stored = [
+                g for g in meta.get("rounds", [])
+                if isinstance(g, dict)
+            ]
         else:
             stored = [
                 {"id": f"past-{i}", "value": v}
@@ -517,6 +687,8 @@ class MiniappGameService:
                     raise NotFoundError("game session not found")
                 if state.game_type == GAME_TYPE_COLOR_SEQUENCE:
                     return _color_public_view(state, dict(state.guesses or {}))
+                if state.game_type == GAME_TYPE_REFLEX_RUSH:
+                    return _reflex_public_view(state)
                 return _public_view(state, list(state.guesses or []))
             return await self._replay_or_missing(session_id, user_id)
 
@@ -561,6 +733,9 @@ class MiniappGameService:
             best_color = await self.results.best_score_for_game(
                 user_id=user_id, game_type=GAME_TYPE_COLOR_SEQUENCE
             )
+            best_reflex = await self.results.best_score_for_game(
+                user_id=user_id, game_type=GAME_TYPE_REFLEX_RUSH
+            )
             rank = await self.profiles.rank_by_xp(total_xp=profile.total_xp)
             actives = await self.states.list_active_by_user(user_id=user_id)
             progress = progress_for_xp(profile.total_xp)
@@ -587,6 +762,7 @@ class MiniappGameService:
                 },
                 "best_win_attempts": best,
                 "best_color_level": best_color,
+                "best_reflex_score": best_reflex,
                 "rank": rank,
                 "active_games": [
                     _active_view(state) for state, _ in actives

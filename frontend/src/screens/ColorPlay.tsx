@@ -54,7 +54,6 @@ export function ColorPlayScreen({
   const [notice, setNotice] = useState('');
   const [showing, setShowing] = useState(false);
   const [flash, setFlash] = useState<number | null>(null);
-  const [busy, setBusy] = useState(false);
   const [replaying, setReplaying] = useState(false);
   const [started, setStarted] = useState(false);
   const [transitionMs, setTransitionMs] = useState<number | null>(null);
@@ -62,10 +61,18 @@ export function ColorPlayScreen({
   viewRef.current = view;
   const playedLevel = useRef<string>('');
   const tapFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Rapid-tap queue: taps are accepted immediately and sent strictly one
+  // at a time (order preserved, so the server always validates the tap the
+  // player intended). No cooldown, no busy-gating.
+  const queueRef = useRef<{ color: number; id: string }[]>([]);
+  const pumpingRef = useRef(false);
+  const mountedRef = useRef(true);
 
   // Tap acknowledgment timers must not outlive the component.
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       if (tapFlashTimer.current) clearTimeout(tapFlashTimer.current);
     };
   }, []);
@@ -134,33 +141,65 @@ export function ColorPlayScreen({
     return () => timers.forEach(clearTimeout);
   }, [view, playbackMs, started, transitionMs]);
 
+  const pump = useCallback(async () => {
+    // Strictly sequential sender: at most one request in flight, so taps
+    // can never arrive out of order and be wrongly rejected.
+    if (pumpingRef.current) return;
+    pumpingRef.current = true;
+    try {
+      while (queueRef.current.length > 0) {
+        const current = viewRef.current;
+        if (!current || current.finished) { queueRef.current = []; break; }
+        if (current.session_id !== sessionId) break; // stale session (replay)
+        if (!mountedRef.current) break;
+        const head = queueRef.current[0];
+        let next: ColorState;
+        try {
+          next = await api.move(ctx.initData, sessionId, head.color, head.id);
+        } catch (e) {
+          // Drop buffered taps (their fate is unknown) and resync from the
+          // server, which remains the single source of truth for position.
+          queueRef.current = [];
+          setNotice(e instanceof Error ? e.message : 'Tap failed. Try again.');
+          try {
+            if (mountedRef.current) setView(await api.colorState(ctx.initData, sessionId));
+          } catch {
+            /* keep last known view */
+          }
+          break;
+        }
+        if (!mountedRef.current) break;
+        queueRef.current.shift();
+        setView(next);
+        if (next.finished) {
+          queueRef.current = [];
+          haptic(next.result?.outcome === 'win' ? 'success' : 'error');
+        } else if (next.levels_completed > current.levels_completed) {
+          // Round cleared: discard taps made before the player could see
+          // the new level, then pause for the transition.
+          queueRef.current = [];
+          setTransitionMs(ROUND_TRANSITION_MS);
+        }
+      }
+    } finally {
+      pumpingRef.current = false;
+    }
+  }, [ctx.initData, sessionId]);
+
   const tap = useCallback(
-    async (color: number) => {
+    (color: number) => {
       const current = viewRef.current;
-      if (!current || current.finished || showing || busy || !started || transitionMs !== null) return;
-      setBusy(true);
+      if (!current || current.finished || showing || !started || transitionMs !== null) return;
       setNotice('');
-      // Immediate acknowledgment so a tap never feels lost (which invites
-      // double-taps that would consume two positions). Playback never runs
-      // while input is unlocked, so this timer cannot fight it.
+      // Immediate acknowledgment so a tap never feels lost. The flash timer
+      // is purely visual and never gates input.
       setFlash(color);
       if (tapFlashTimer.current) clearTimeout(tapFlashTimer.current);
       tapFlashTimer.current = setTimeout(() => setFlash(null), 180);
-      try {
-        const next = await api.move(ctx.initData, sessionId, color, newClientGuessId());
-        setView(next);
-        if (!next.finished && next.levels_completed > current.levels_completed) {
-          // Round cleared: pause for the transition, then play the next level.
-          setTransitionMs(ROUND_TRANSITION_MS);
-        }
-        if (next.finished) haptic(next.result?.outcome === 'win' ? 'success' : 'error');
-      } catch (e) {
-        setNotice(e instanceof Error ? e.message : 'Tap failed. Try again.');
-      } finally {
-        setBusy(false);
-      }
+      queueRef.current.push({ color, id: newClientGuessId() });
+      void pump();
     },
-    [busy, ctx.initData, sessionId, showing, started, transitionMs],
+    [showing, started, transitionMs, pump],
   );
 
   useEffect(() => {
@@ -283,7 +322,7 @@ export function ColorPlayScreen({
     );
   }
 
-  const inputLocked = showing || busy || transitionMs !== null;
+  const inputLocked = showing || transitionMs !== null;
   const countdown = transitionMs === null ? 0 : Math.ceil(transitionMs / 1000);
 
   return (
@@ -358,7 +397,7 @@ export function ColorPlayScreen({
           </button>
         ))}
       </div>
-      <p className="text-center text-[11px] text-slate-500">Keys 1–4 work too · input locks during playback and transitions</p>
+      <p className="text-center text-[11px] text-slate-500">Keys 1–4 work too · tap as fast as you like · input locks during playback and transitions</p>
     </div>
   );
 }

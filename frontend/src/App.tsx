@@ -5,6 +5,7 @@ import { HomeScreen } from './screens/Home';
 import { GamesScreen } from './screens/Games';
 import { PlayScreen } from './screens/Play';
 import { ColorPlayScreen } from './screens/ColorPlay';
+import { ReflexPlayScreen } from './screens/ReflexPlay';
 import { LeaderboardScreen } from './screens/Leaderboard';
 import { ProfileScreen } from './screens/Profile';
 
@@ -72,7 +73,15 @@ export default function App() {
             onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'color_sequence', sessionId })}
           />
         )}
-        {route.name === 'play' && route.gameId !== 'color_sequence' && (
+        {route.name === 'play' && route.gameId === 'reflex_rush' && (
+          <ReflexPlayScreen
+            ctx={ctx}
+            sessionId={route.sessionId}
+            onExit={() => setRoute({ name: 'games' })}
+            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'reflex_rush', sessionId })}
+          />
+        )}
+        {route.name === 'play' && route.gameId !== 'color_sequence' && route.gameId !== 'reflex_rush' && (
           <PlayScreen
             ctx={ctx}
             sessionId={route.sessionId}

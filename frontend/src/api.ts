@@ -18,11 +18,12 @@ export interface DashboardData {
   today: { games_played: number; xp_earned: number };
   best_win_attempts: number | null;
   best_color_level: number | null;
+  best_reflex_score?: number | null;
   rank: number;
   active_games: ActiveGame[];
 }
 
-export type ActiveGame = GameState | ColorState;
+export type ActiveGame = GameState | ColorState | ReflexState;
 
 export interface DifficultyInfo {
   id: string;
@@ -93,6 +94,42 @@ export interface ColorState {
   result: ColorResult | null;
 }
 
+export interface ReflexRoundInput {
+  reaction_ms: number | null;
+  false_start: boolean;
+}
+
+export interface ReflexRoundView {
+  reaction_ms: number | null;
+  false_start: boolean;
+}
+
+export interface ReflexResult {
+  outcome: 'win' | 'loss';
+  score: number;
+  xp_earned: number;
+  secret: number | null;
+  avg_ms: number | null;
+  best_ms: number | null;
+  false_starts: number;
+  rounds: ReflexRoundView[];
+}
+
+export interface ReflexState {
+  session_id: string;
+  game_type: string;
+  difficulty: string;
+  max_attempts: number;
+  rounds_total?: number;
+  rounds_played?: number;
+  attempts_used?: number;
+  attempts_left?: number;
+  guesses: ReflexRoundView[];
+  status: string;
+  finished: boolean;
+  result: ReflexResult | null;
+}
+
 export interface HistoryItem {
   session_id: string;
   game_type: string;
@@ -156,7 +193,7 @@ export const api = {
   me: (initData: string) => request<DashboardData>('/api/me', initData),
   games: (initData: string) => request<{ games: GameInfo[] }>('/api/games', initData),
   start: (initData: string, gameId: string, difficulty: string) =>
-    request<GameState | ColorState>('/api/sessions', initData, {
+    request<GameState | ColorState | ReflexState>('/api/sessions', initData, {
       method: 'POST',
       body: JSON.stringify({ game_type: gameId, difficulty }),
     }),
@@ -174,6 +211,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ color, client_move_id: clientMoveId }),
     }),
+  finishReflex: (initData: string, sessionId: string, rounds: ReflexRoundInput[], clientSubmissionId: string) =>
+    request<ReflexState>(`/api/sessions/${sessionId}/finish`, initData, {
+      method: 'POST',
+      body: JSON.stringify({ rounds, client_submission_id: clientSubmissionId }),
+    }),
+  reflexState: (initData: string, sessionId: string) =>
+    request<ReflexState>(`/api/sessions/${sessionId}`, initData),
   cancel: (initData: string, sessionId: string) =>
     request<{ session_id: string; status: string }>(`/api/sessions/${sessionId}`, initData, {
       method: 'DELETE',

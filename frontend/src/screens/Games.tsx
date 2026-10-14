@@ -70,13 +70,15 @@ export function GamesScreen({
 
 function XpRulesLine({ game, difficulty }: { game: GameInfo; difficulty: string }) {
   const rules = game.xp_rules?.[difficulty] as
-    | { win_first_try?: number; win_last_try?: number; loss?: number; win?: number; loss_per_level?: number }
+    | { win_first_try?: number; win_last_try?: number; loss?: number; win?: number; loss_per_level?: number; win_bonus?: number }
     | undefined;
   if (!rules) return null;
   const text =
     game.id === 'color_sequence'
       ? `Win: +${rules.win} XP · Each level: +${rules.loss_per_level} XP`
-      : `Win XP: ${rules.win_first_try} first try → ${rules.win_last_try} last try · Loss: +${rules.loss} XP`;
+      : game.id === 'reflex_rush'
+        ? `Fast taps earn more · Win bonus: +${rules.win_bonus} XP`
+        : `Win XP: ${rules.win_first_try} first try → ${rules.win_last_try} last try · Loss: +${rules.loss} XP`;
   return <p className="mt-2 text-center text-xs text-slate-400">{text}</p>;
 }
 
@@ -104,7 +106,9 @@ function DifficultyModal({
         <p className="mt-1 text-sm text-slate-400">
           {picked.id === 'color_sequence'
             ? 'Memorize the flashing colors, then repeat them. Longer runs earn more XP.'
-            : 'Pick your difficulty. Fewer attempts, more XP per win.'}
+            : picked.id === 'reflex_rush'
+              ? 'Wait for green, then tap fast. False starts score 0 for that round.'
+              : 'Pick your difficulty. Fewer attempts, more XP per win.'}
         </p>
         <div className="mt-3 grid grid-cols-3 gap-2">
           {picked.difficulties.map((d) => (

@@ -16,6 +16,7 @@ from brainrush.services.miniapp import (
 )
 from brainrush.game import color_sequence as color_game
 from brainrush.game import number_guessing as guessing
+from brainrush.game import reflex_rush as reflex_game
 
 router = APIRouter(prefix="/api")
 
@@ -33,6 +34,16 @@ class GuessRequest(BaseModel):
 class MoveRequest(BaseModel):
     color: int = Field(ge=0, le=3)
     client_move_id: str = Field(min_length=1, max_length=64)
+
+
+class ReflexRound(BaseModel):
+    reaction_ms: int | None = Field(default=None, ge=1, le=10000)
+    false_start: bool = False
+
+
+class ReflexFinishRequest(BaseModel):
+    rounds: list[ReflexRound] = Field(min_length=5, max_length=5)
+    client_submission_id: str = Field(min_length=1, max_length=64)
 
 
 IdentityDep = Annotated[dict, Depends(get_verified_identity)]
@@ -76,6 +87,19 @@ async def games() -> dict:
                     "loss_per_level": cfg.xp_per_level,
                 }
                 for did, cfg in color_game.COLOR_DIFFICULTIES.items()
+            }
+        elif entry["id"] == "reflex_rush":
+            item["xp_rules"] = {
+                did: {
+                    "win_bonus": cfg.win_bonus,
+                    "xp_perfect": cfg.xp_perfect,
+                    "xp_good": cfg.xp_good,
+                    "xp_slow": cfg.xp_slow,
+                    "win_avg_ms": cfg.win_avg_ms,
+                    "wait_min_ms": cfg.wait_min_ms,
+                    "wait_max_ms": cfg.wait_max_ms,
+                }
+                for did, cfg in reflex_game.REFLEX_DIFFICULTIES.items()
             }
         catalog.append(item)
     return {"games": catalog}
@@ -140,6 +164,21 @@ async def move(
         user_id=identity["user_id"],
         color=body.color,
         client_move_id=body.client_move_id,
+    )
+
+
+@router.post("/sessions/{session_id}/finish")
+async def finish_reflex(
+    session_id: uuid.UUID,
+    body: ReflexFinishRequest,
+    identity: IdentityDep,
+    session: SessionDep,
+) -> dict:
+    return await _service(session).finish_reflex(
+        session_id=session_id,
+        user_id=identity["user_id"],
+        rounds=[r.model_dump() for r in body.rounds],
+        client_submission_id=body.client_submission_id,
     )
 
 

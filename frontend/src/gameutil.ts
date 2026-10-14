@@ -11,7 +11,7 @@ export function difficultyLabel(id: string): string {
 
 /** Frontend display name per game (backend ids stay easy/medium/hard). */
 export function difficultyDisplayName(gameId: string, id: string): string {
-  if (gameId === 'color_sequence' && id === 'medium') return 'Normal';
+  if ((gameId === 'color_sequence' || gameId === 'reflex_rush') && id === 'medium') return 'Normal';
   return difficultyLabel(id);
 }
 
@@ -22,6 +22,9 @@ export function difficultySub(
 ): string {
   if (gameId === 'color_sequence') {
     return `Up to ${d.max_attempts} rounds · starts at ${d.start_length ?? '?'}`;
+  }
+  if (gameId === 'reflex_rush') {
+    return `5 rounds · tap fast`;
   }
   return difficultyBlurb(d.max_attempts);
 }
@@ -60,6 +63,7 @@ export function keypadReducer(buffer: string, key: string): string {
 export function gameTitle(gameType: string): string {
   if (gameType === 'color_sequence') return 'Color Sequence';
   if (gameType === 'number_guessing') return 'Number Guessing';
+  if (gameType === 'reflex_rush') return 'Reflex Rush';
   return gameType;
 }
 
@@ -68,7 +72,17 @@ export function resumeHint(game: {
   game_type: string;
   attempts_left?: number;
   level?: number;
+  rounds_played?: number;
+  rounds_total?: number;
 }): string {
   if (game.game_type === 'color_sequence') return `Lv ${game.level ?? '?'}`;
+  if (game.game_type === 'reflex_rush')
+    return `${game.rounds_played ?? 0}/${game.rounds_total ?? 5}`;
   return `${game.attempts_left ?? '?'} left`;
+}
+
+/** Format a reaction time for display. Null = false start. */
+export function formatMs(ms: number | null): string {
+  if (ms === null || ms === undefined) return 'False start';
+  return `${ms} ms`;
 }
