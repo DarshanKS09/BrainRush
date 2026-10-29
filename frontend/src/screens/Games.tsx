@@ -1,11 +1,25 @@
-import { useEffect, useState } from 'react';
+/** Games library: a polished 3-column game grid.
+ *
+ * Replaces the old vertically stacked full-width cards. Every registered
+ * game appears exactly once as a compact tile (icon + name). Tapping a
+ * playable tile opens an in-place details panel (no navigation away) that
+ * shows the description, difficulties, and modes, with a prominent Play Now
+ * button. Exactly one colorful "Play With Friends" button sits at the top,
+ * separate from the grid, and opens the existing multiplayer hub.
+ */
+import { useEffect, useMemo, useState } from 'react';
 import { api, type GameInfo } from '../api';
-import { difficultyDisplayName, difficultySub, reflexWaitText } from '../gameutil';
+import { difficultyDisplayName, difficultySub } from '../gameutil';
 import type { WebAppContext } from '../telegram';
-import { GameCard } from '../components/GameCard';
+import { GameTile } from '../components/GameTile';
 import { ErrorNotice, Loading, SectionTitle } from '../components/ui';
-import { CreateMatchForm } from './Matches';
 import { haptic } from '../telegram';
+
+const MODE_LABELS: Record<string, string> = {
+  duel: '1v1 Duel',
+  ffa: 'Free-for-All',
+  tournament: 'Tournament',
+};
 
 export function GamesScreen({
   ctx,
@@ -21,12 +35,15 @@ export function GamesScreen({
   const [games, setGames] = useState<GameInfo[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [picked, setPicked] = useState<GameInfo | null>(null);
+  const [search, setSearch] = useState('');
+  const [selected, setSelected] = useState<GameInfo | null>(null);
   const [difficulty, setDifficulty] = useState('medium');
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState('');
 
   useEffect(() => {
+    setLoading(true);
+    setError('');
     api
       .games(ctx.initData)
       .then((r) => setGames(r.games))
@@ -34,14 +51,19 @@ export function GamesScreen({
       .finally(() => setLoading(false));
   }, [ctx.initData]);
 
+  const filtered = useMemo(
+    () => games.filter((g) => g.title.toLowerCase().includes(search.toLowerCase())),
+    [games, search],
+  );
+
   const begin = async () => {
-    if (!picked) return;
+    if (!selected) return;
     setStarting(true);
     setStartError('');
     try {
-      const state = await api.start(ctx.initData, picked.id, difficulty);
+      const state = await api.start(ctx.initData, selected.id, difficulty);
       haptic('success');
-      onStart(picked.id, state.session_id);
+      onStart(selected.id, state.session_id);
     } catch (e) {
       setStartError(e instanceof Error ? e.message : 'Could not start the game.');
     } finally {
@@ -51,9 +73,10 @@ export function GamesScreen({
 
   if (loading) return <Loading label="Loading games…" />;
   if (error) return <ErrorNotice message={error} onRetry={() => window.location.reload()} />;
+
   return (
     <div className="space-y-3">
-      <SectionTitle>Game lobby</SectionTitle>
+      {/* Exactly one prominent Play With Friends button, separate from the grid. */}
       <button
         onClick={() => (onSetupMatch ?? (() => {}))()}
         className="w-full rounded-3xl bg-gradient-to-r from-amber-500 via-rose-500 to-neon-purple p-4 text-left shadow-glow active:scale-[0.99]"
@@ -62,126 +85,211 @@ export function GamesScreen({
           <span aria-hidden>👥</span> Play With Friends
         </span>
         <span className="mt-0.5 block text-xs font-medium text-white/85">
-          Private room · pick a game &amp; mode · share a code or link
+          Private room · pick a game & mode · share a code or link
         </span>
       </button>
-      {games.map((g) => (
-        <GameCard key={g.id} game={g} onPlay={(game) => { setPicked(game); setStartError(''); }} />
-      ))}
 
-      {picked?.playable && (
-        <DifficultyModal
-          picked={picked}
+      {/* Compact client-side search (no backend requests). */}
+      <div className="relative">
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search games…"
+          aria-label="Search games"
+          className="w-full rounded-xl bg-abyss px-3 py-2.5 pl-9 pr-3 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-neon-cyan"
+        />
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs" aria-hidden>
+          🔍
+        </span>
+      </div>
+
+      <SectionTitle>Games</SectionTitle>
+      {filtered.length === 0 ? (
+        <p className="rounded-2xl bg-panel p-4 text-center text-sm text-slate-400">
+          No games match your search.
+        </p>
+      ) : (
+        <div className="grid grid-cols-3 gap-2">
+          {filtered.map((g) => (
+            <GameTile key={g.id} game={g} onSelect={setSelected} />
+          ))}
+        </div>
+      )}
+
+      {/* In-place details panel (overlay): keeps routing intact, no navigation away. */}
+      {selected && (
+        <GameDetailsPanel
+          game={selected}
           difficulty={difficulty}
           setDifficulty={setDifficulty}
           starting={starting}
           startError={startError}
-          onBack={() => setPicked(null)}
-          onBegin={begin}
+          onClose={() => setSelected(null)}
+          onPlay={begin}
+          onPlayWithFriends={onSetupMatch}
         />
       )}
-      {picked?.playable && (
-        <CreateMatchForm ctx={ctx} gameId={picked.id} onCreated={onOpenMatch ?? (() => {})} />
-      )}
     </div>
   );
 }
 
-function XpRulesLine({ game, difficulty }: { game: GameInfo; difficulty: string }) {
-  const rules = game.xp_rules?.[difficulty] as
-    | { win_first_try?: number; win_last_try?: number; loss?: number; win?: number; loss_per_level?: number; win_bonus?: number; win_avg_ms?: number; perfect?: number; win_accuracy?: number }
-    | undefined;
-  if (!rules) return null;
-  const text =
-    game.id === 'color_sequence'
-      ? `Win: +${rules.win} XP · Each level: +${rules.loss_per_level} XP`
-      : game.id === 'reflex_rush'
-        ? `Fast taps earn more · Win bonus: +${rules.win_bonus} XP`
-        : game.id === 'perfect_second'
-          ? `Perfect stop: +${rules.perfect} XP · ${rules.win_accuracy}%+ accuracy wins`
-          : `Win XP: ${rules.win_first_try} first try → ${rules.win_last_try} last try · Loss: +${rules.loss} XP`;
-  return <p className="mt-2 text-center text-xs text-slate-400">{text}</p>;
-}
-
-function ReflexRules({ game, difficulty }: { game: GameInfo; difficulty: string }) {
-  if (game.id !== 'reflex_rush') return null;
-  const d = game.difficulties.find((x) => x.id === difficulty);
-  const winAvg = (game.xp_rules?.[difficulty] as { win_avg_ms?: number } | undefined)?.win_avg_ms;
+/** Difficulty chips reused by the details panel. */
+function DifficultyChips({
+  game,
+  difficulty,
+  setDifficulty,
+}: {
+  game: GameInfo;
+  difficulty: string;
+  setDifficulty: (d: string) => void;
+}) {
   return (
-    <div className="mt-2 rounded-xl bg-navy p-3 text-left text-xs text-slate-300">
-      <p className="font-bold text-white">⏱️ {d ? reflexWaitText({ id: d.id, wait_min_ms: d.wait_min_ms, wait_max_ms: d.wait_max_ms }) : ''}</p>
-      <p className="mt-1">5 rounds. Tapping before green is a false start: 0 points for that round, but it still counts.</p>
-      <p className="mt-1">
-        Faster valid taps earn more points and XP.
-        {winAvg !== undefined && ` Win: average ≤ ${winAvg} ms with at most 1 false start.`}
-      </p>
+    <div className="mt-2 grid grid-cols-3 gap-1.5">
+      {game.difficulties.map((d) => {
+        const active = difficulty === d.id;
+        return (
+          <button
+            key={d.id}
+            onClick={() => setDifficulty(d.id)}
+            aria-pressed={active}
+            className={`rounded-xl px-2 py-1.5 text-xs font-bold transition-all ${
+              active
+                ? 'bg-gradient-to-br from-neon-purple to-neon-cyan text-white shadow-glow'
+                : 'bg-navy text-slate-300 active:scale-95'
+            }`}
+          >
+            {difficultyDisplayName(game.id, d.id)}
+            <span className="block text-[10px] font-medium opacity-70">
+              {difficultySub(game.id, d)}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
 
-function DifficultyModal({
-  picked,
+/** Game details panel: opens when a grid tile is tapped. */
+function GameDetailsPanel({
+  game,
   difficulty,
   setDifficulty,
   starting,
   startError,
-  onBack,
-  onBegin,
+  onClose,
+  onPlay,
+  onPlayWithFriends,
 }: {
-  picked: GameInfo;
+  game: GameInfo;
   difficulty: string;
   setDifficulty: (d: string) => void;
   starting: boolean;
   startError: string;
-  onBack: () => void;
-  onBegin: () => void;
+  onClose: () => void;
+  onPlay: () => void;
+  onPlayWithFriends?: () => void;
 }) {
+  const multiplayerModes = (game.multiplayer?.modes ?? []).filter(Boolean);
+
   return (
-    <div className="fixed inset-0 z-20 flex items-end justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="Choose difficulty">
-      <div className="w-full max-w-md rounded-3xl bg-panel p-5 shadow-card animate-pop">
-        <h3 className="text-lg font-bold text-white">{picked.title}</h3>
-        <p className="mt-1 text-sm text-slate-400">
-          {picked.id === 'color_sequence'
-            ? 'Memorize the flashing colors, then repeat them. Longer runs earn more XP.'
-            : picked.id === 'reflex_rush'
-              ? 'Wait for green, then tap fast. False starts score 0 for that round.'
-              : picked.id === 'perfect_second'
-                ? 'Start the clock, then tap STOP exactly on the target. Closer stops earn up to 100 XP.'
-                : 'Pick your difficulty. Fewer attempts, more XP per win.'}
-        </p>
-        <div className="mt-3 grid grid-cols-3 gap-2">
-          {picked.difficulties.map((d) => (
-            <button
-              key={d.id}
-              onClick={() => setDifficulty(d.id)}
-              aria-pressed={difficulty === d.id}
-              className={`rounded-xl px-2 py-2.5 text-sm font-bold transition-all ${
-                difficulty === d.id
-                  ? 'bg-gradient-to-br from-neon-purple to-neon-cyan text-white shadow-glow'
-                  : 'bg-navy text-slate-300 active:scale-95'
-              }`}
-            >
-              {difficultyDisplayName(picked.id, d.id)}
-              <span className="block text-[11px] font-medium opacity-80">{difficultySub(picked.id, d)}</span>
-            </button>
-          ))}
-        </div>
-        <XpRulesLine game={picked} difficulty={difficulty} />
-        <ReflexRules game={picked} difficulty={difficulty} />
-        {startError && <p className="mt-2 text-center text-sm text-red-300" role="alert">{startError}</p>}
-        <div className="mt-4 flex gap-2">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={game.title}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="w-full max-w-md rounded-3xl bg-panel p-6 shadow-card animate-pop">
+        <div className="flex items-center justify-between mb-1">
+          <div className="flex h-[64px] w-[64px] items-center justify-center rounded-2xl bg-gradient-to-r from-neon-purple to-neon-cyan text-white shadow-glow">
+            <span className="text-3xl" aria-hidden>
+              {({
+                number_guessing: '🔢',
+                color_sequence: '🎨',
+                reflex_rush: '⚡',
+                perfect_second: '⏱️',
+                maze_race: '🌀',
+                memory_match: '🃏',
+                reaction_test: '🎯',
+                math_challenge: '➗',
+                word_puzzle: '🔤',
+              } as Record<string, string>)[game.id] ?? '🎲'}
+            </span>
+          </div>
           <button
-            onClick={onBack}
-            className="flex-1 rounded-xl bg-navy py-2.5 text-sm font-bold text-slate-300 active:scale-95"
+            onClick={onClose}
+            className="rounded-xl bg-navy p-1.5 text-slate-400 active:bg-white/10 active:scale-95"
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </div>
+        <h2 className="mt-1 text-lg font-bold text-white">{game.title}</h2>
+        <p className="mt-1 text-sm text-slate-300">{game.description}</p>
+
+        {game.playable && game.difficulties.length > 0 && (
+          <>
+            <SectionTitle>Difficulty</SectionTitle>
+            <DifficultyChips game={game} difficulty={difficulty} setDifficulty={setDifficulty} />
+          </>
+        )}
+
+        {multiplayerModes.length > 0 && (
+          <>
+            <SectionTitle>Play with friends</SectionTitle>
+            <p className="mt-1 text-xs text-slate-400">
+              Modes: {multiplayerModes.map((m) => MODE_LABELS[m] ?? m).join(' · ')}
+            </p>
+            <button
+              onClick={() => {
+                onClose();
+                (onPlayWithFriends ?? (() => {}))();
+              }}
+              className="mt-2 w-full rounded-xl bg-navy border border-white/20 px-3 py-2 text-sm font-bold text-slate-200 active:bg-white/10 disabled:opacity-50"
+              disabled={!game.playable}
+            >
+              Open Play With Friends
+            </button>
+          </>
+        )}
+
+        {!game.playable && (
+          <p className="mt-2 text-xs text-slate-500 text-center">
+            Coming soon — no gameplay yet.
+          </p>
+        )}
+
+        {startError && (
+          <p className="mt-2 text-center text-sm text-red-300" role="alert">
+            {startError}
+          </p>
+        )}
+
+        <div className="mt-5 flex gap-2">
+          {game.playable ? (
+            <button
+              onClick={onPlay}
+              disabled={starting}
+              className="flex-1 rounded-xl bg-gradient-to-r from-neon-purple to-neon-cyan py-3 text-sm font-bold text-white shadow-glow active:scale-[0.98] disabled:opacity-50"
+            >
+              {starting ? 'Starting…' : 'Play Now'}
+            </button>
+          ) : (
+            <button
+              disabled
+              className="flex-1 rounded-xl bg-navy py-3 text-sm font-bold text-slate-500 cursor-not-allowed"
+            >
+              Coming soon
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="flex-1 rounded-xl bg-navy py-3 text-sm font-bold text-slate-300 active:scale-95"
           >
             Back
-          </button>
-          <button
-            onClick={onBegin}
-            disabled={starting}
-            className="flex-1 rounded-xl bg-gradient-to-r from-neon-purple to-neon-cyan py-2.5 text-sm font-bold text-white shadow-glow active:scale-95 disabled:opacity-50"
-          >
-            {starting ? 'Starting…' : 'Start game'}
           </button>
         </div>
       </div>

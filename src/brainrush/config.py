@@ -43,7 +43,7 @@ class Settings(BaseSettings):
         description="Hosting-provider port override (Render/Railway/Fly inject PORT)",
     )
     API_CORS_ORIGINS: str = Field(
-        default="",
+        default="https://brainrush-w9tp.onrender.com",
         description="Comma-separated allowed CORS origins for the API",
     )
     INIT_DATA_MAX_AGE: int = Field(
