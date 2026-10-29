@@ -293,3 +293,43 @@ async def test_delete_for_expired_sessions_targets_ended_states():
     compiled = _sql(session.statements[0])
     assert "webapp_game_states" in compiled
     assert "abandoned" in compiled and "expired" in compiled
+
+
+# -- MatchParticipant batch methods -------------------------------------------
+
+from brainrush.db.repository import MatchParticipantRepository  # noqa: E402
+
+
+async def test_match_participants_list_by_match_ids():
+    from types import SimpleNamespace
+
+    mid_a = uuid.uuid4()
+    mid_b = uuid.uuid4()
+    rows = [
+        SimpleNamespace(match_id=mid_a, user_id=uuid.uuid4(), joined_at=None),
+        SimpleNamespace(match_id=mid_a, user_id=uuid.uuid4(), joined_at=None),
+        SimpleNamespace(match_id=mid_b, user_id=uuid.uuid4(), joined_at=None),
+    ]
+    session = RecordingSession(script=[FakeResult(rows=rows)])
+    repo = MatchParticipantRepository(session)
+
+    grouped = await repo.list_by_match_ids(match_ids=[mid_a, mid_b])
+
+    assert set(grouped.keys()) == {mid_a, mid_b}
+    assert len(grouped[mid_a]) == 2
+    assert len(grouped[mid_b]) == 1
+    # Only one execute call: batch, not N+1.
+    assert len(session.statements) == 1
+    assert session.commits == 0
+
+
+async def test_match_participants_count_by_match_ids():
+    mid1, mid2 = uuid.uuid4(), uuid.uuid4()
+    session = RecordingSession(script=[FakeResult(rows=[(mid1, 3), (mid2, 1)])])
+    repo = MatchParticipantRepository(session)
+
+    counts = await repo.count_by_match_ids(match_ids=[mid1, mid2])
+
+    assert counts == {mid1: 3, mid2: 1}
+    assert len(session.statements) == 1
+    assert session.commits == 0

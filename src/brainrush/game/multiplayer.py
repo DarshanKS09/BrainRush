@@ -100,6 +100,17 @@ class _PerfectSecondSpec(MultiplayerSpec):
         return perfect.match_target_ms(match_id, difficulty)
 
 
+@dataclass(frozen=True)
+class _MazeRaceSpec(MultiplayerSpec):
+    def tiebreak_key(self, *, metadata: dict, ended_at: datetime | None) -> tuple:
+        # Completion time (ms) is the primary score; earlier finish breaks ties.
+        # Wrong turns / backtracking are already reflected in elapsed time.
+        ms = metadata.get("elapsed_ms")
+        ms_key = ms if isinstance(ms, (int, float)) else 10**12
+        ended = ended_at.isoformat() if ended_at is not None else ""
+        return (ms_key, ended)
+
+
 REGISTRY: dict[str, MultiplayerSpec] = {
     "number_guessing": _NumberGuessingSpec(
         game_type="number_guessing",
@@ -121,6 +132,12 @@ REGISTRY: dict[str, MultiplayerSpec] = {
     ),
     "perfect_second": _PerfectSecondSpec(
         game_type="perfect_second",
+        modes=frozenset({"duel", "ffa", "tournament"}),
+        higher_is_better=False,
+        match_minutes=30,
+    ),
+    "maze_race": _MazeRaceSpec(
+        game_type="maze_race",
         modes=frozenset({"duel", "ffa", "tournament"}),
         higher_is_better=False,
         match_minutes=30,

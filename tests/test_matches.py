@@ -288,6 +288,23 @@ class StubParts:
     async def count_by_match(self, *, match_id):
         return sum(1 for r in self.rows if r.match_id == match_id)
 
+    async def list_by_match_ids(self, *, match_ids):
+        """Batch-fetch participants for multiple matches, keyed by match_id."""
+        result: dict = {}
+        for mid in match_ids:
+            result[mid] = sorted(
+                [r for r in self.rows if r.match_id == mid],
+                key=lambda r: r.joined_at,
+            )
+        return result
+
+    async def count_by_match_ids(self, *, match_ids):
+        """Batch count participants per match."""
+        return {
+            mid: sum(1 for r in self.rows if r.match_id == mid)
+            for mid in match_ids
+        }
+
     async def add(self, *, match_id, user_id):
         if self.raise_on_add:
             raise IntegrityError("INSERT", {}, Exception("uq"))
@@ -433,12 +450,13 @@ def _registered(svc, telegram_id, **kw):
 
 async def test_registry_covers_all_solo_games():
     assert set(mp.REGISTRY) == {"number_guessing", "color_sequence",
-                                "reflex_rush", "perfect_second"}
+                                "reflex_rush", "perfect_second", "maze_race"}
     for spec in mp.REGISTRY.values():
         assert spec.modes <= mp.MODES
         assert spec.modes  # every game supports at least one mode
     assert mp.spec_for("perfect_second").modes == mp.MODES
     assert mp.spec_for("perfect_second").higher_is_better is False
+    assert mp.spec_for("maze_race").higher_is_better is False
     with pytest.raises(ValueError):
         mp.spec_for("quiz_rush")
 

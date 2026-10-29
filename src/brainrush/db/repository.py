@@ -1048,6 +1048,23 @@ class MatchParticipantRepository(BaseRepository[MatchParticipant]):
         )
         return list(result.scalars().all())
 
+    async def list_by_match_ids(
+        self, *, match_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, list[MatchParticipant]]:
+        """Batch-fetch participants for multiple matches, keyed by match_id."""
+        if not match_ids:
+            return {}
+        result = await self.session.execute(
+            select(MatchParticipant)
+            .where(MatchParticipant.match_id.in_(match_ids))
+            .order_by(MatchParticipant.match_id, MatchParticipant.joined_at.asc())
+        )
+        rows = list(result.scalars().all())
+        grouped: dict[uuid.UUID, list[MatchParticipant]] = {}
+        for p in rows:
+            grouped.setdefault(p.match_id, []).append(p)
+        return grouped
+
     async def count_by_match(self, *, match_id: uuid.UUID) -> int:
         result = await self.session.execute(
             select(func.count())
@@ -1055,6 +1072,20 @@ class MatchParticipantRepository(BaseRepository[MatchParticipant]):
             .where(MatchParticipant.match_id == match_id)
         )
         return result.scalar_one_or_none() or 0
+
+    async def count_by_match_ids(
+        self, *, match_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, int]:
+        """Batch count participants per match."""
+        if not match_ids:
+            return {}
+        result = await self.session.execute(
+            select(MatchParticipant.match_id, func.count())
+            .select_from(MatchParticipant)
+            .where(MatchParticipant.match_id.in_(match_ids))
+            .group_by(MatchParticipant.match_id)
+        )
+        return {mid: cnt for mid, cnt in result.all()}
 
     async def add(self, *, match_id: uuid.UUID, user_id: uuid.UUID) -> MatchParticipant:
         row = MatchParticipant(match_id=match_id, user_id=user_id)

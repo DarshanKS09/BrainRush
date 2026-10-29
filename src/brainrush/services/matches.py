@@ -684,12 +684,20 @@ class MatchService:
     ) -> list[dict]:
         async with self.session.begin():
             await self._expire_lobbies_locked(user_id=user_id)
-            out = []
-            for match in await self.matches.list_by_user(
+            matches = await self.matches.list_by_user(
                 user_id=user_id, limit=limit, offset=offset
-            ):
-                mine = await self.parts.get(match_id=match.id, user_id=user_id)
-                count = await self.parts.count_by_match(match_id=match.id)
+            )
+            if not matches:
+                return []
+            match_ids = [m.id for m in matches]
+            # Batch-fetch participants and counts to avoid N+1 queries.
+            parts_by_match = await self.parts.list_by_match_ids(match_ids=match_ids)
+            counts_by_match = await self.parts.count_by_match_ids(match_ids=match_ids)
+            out = []
+            for match in matches:
+                parts = parts_by_match.get(match.id, [])
+                mine = next((p for p in parts if p.user_id == user_id), None)
+                count = counts_by_match.get(match.id, len(parts))
                 out.append(
                     {
                         "match_id": str(match.id),
@@ -712,10 +720,17 @@ class MatchService:
 
     async def my_invites(self, *, user_id: uuid.UUID) -> list[dict]:
         async with self.session.begin():
+            rows = await self.invites.list_pending_with_matches(user_id=user_id)
+            if not rows:
+                return []
+            # Batch-resolve hosts and participant counts to avoid N+1.
+            match_ids = [m.id for _, m in rows]
+            parts_by_match = await self.parts.list_by_match_ids(match_ids=match_ids)
+            counts_by_match = await self.parts.count_by_match_ids(match_ids=match_ids)
+            host_ids = {m.host_user_id for _, m in rows}
+            users = {u.id: u for u in await self.users.list_by_ids(list(host_ids))}
             out = []
-            for inv, match in await self.invites.list_pending_with_matches(
-                user_id=user_id
-            ):
+            for inv, match in rows:
                 if match.status != "lobby":
                     continue
                 if (
@@ -723,8 +738,8 @@ class MatchService:
                     and utcnow() >= match.token_expires_at
                 ):
                     continue
-                host = await self.users.get_by_id(match.host_user_id)
-                count = await self.parts.count_by_match(match_id=match.id)
+                host = users.get(match.host_user_id)
+                count = counts_by_match.get(match.id, len(parts_by_match.get(match.id, [])))
                 out.append(
                     {
                         "match_id": str(match.id),

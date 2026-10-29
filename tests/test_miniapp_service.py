@@ -222,6 +222,7 @@ async def test_dashboard_shape_uses_real_numbers():
             FakeResult(rows=[]),  # best color level (none yet)
             FakeResult(rows=[]),  # best reflex score (none yet)
             FakeResult(rows=[]),  # best perfect error (none yet)
+            FakeResult(rows=[]),  # best maze time (none yet)
             FakeResult(rows=[2]),  # rank count -> rank 3
             FakeResult(rows=[]),  # active states
         ]
@@ -238,6 +239,7 @@ async def test_dashboard_shape_uses_real_numbers():
     assert dash["best_color_level"] is None
     assert dash["best_reflex_score"] is None
     assert dash["best_perfect_error_ms"] is None
+    assert dash["best_maze_time_ms"] is None
     assert dash["rank"] == 3
     assert dash["active_games"] == []
 
@@ -258,6 +260,7 @@ async def test_dashboard_expires_stale_and_cleans_orphan_states():
             FakeResult(rows=[]),  # best color level
             FakeResult(rows=[]),  # best reflex score
             FakeResult(rows=[]),  # best perfect error
+            FakeResult(rows=[]),  # best maze time
             FakeResult(rows=[2]),  # rank count -> rank 3
             FakeResult(rows=[]),  # active states (stale ones gone)
         ]

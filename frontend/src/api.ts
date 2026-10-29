@@ -24,7 +24,7 @@ export interface DashboardData {
   active_games: ActiveGame[];
 }
 
-export type ActiveGame = GameState | ColorState | ReflexState | PerfectState;
+export type ActiveGame = GameState | ColorState | ReflexState | PerfectState | MazeState;
 
 export interface DifficultyInfo {
   id: string;
@@ -36,6 +36,10 @@ export interface DifficultyInfo {
   target_min_ms?: number;
   target_max_ms?: number;
   target_step_ms?: number;
+  rows?: number;
+  cols?: number;
+  branching?: number;
+  par_time_s?: number;
 }
 
 export interface GameXpRules {
@@ -174,6 +178,38 @@ export interface PerfectState {
   status: string;
   finished: boolean;
   result: PerfectResult | null;
+}
+
+export interface MazeCell {
+  r: number;
+  c: number;
+  walls: { up: boolean; right: boolean; down: boolean; left: boolean };
+}
+
+export interface MazeResult {
+  outcome: 'win';
+  score: number;
+  xp_earned: number;
+  elapsed_ms: number;
+  moves: number;
+  xp_breakdown: { base: number; time_bonus: number; path_bonus: number; total: number };
+}
+
+export interface MazeState {
+  session_id: string;
+  game_type: string;
+  difficulty: string;
+  max_attempts: number;
+  attempts_used: number;
+  attempts_left: number;
+  maze: { rows: number; cols: number; start: number[]; exit: number[]; cells: MazeCell[] };
+  player: { r: number; c: number };
+  exit: { r: number; c: number };
+  valid_directions: string[];
+  moves: number;
+  elapsed_ms: number | null;
+  finished: boolean;
+  result: MazeResult | null;
 }
 
 export interface ReferralLink {
@@ -394,6 +430,13 @@ export const api = {
     request<PerfectState>(`/api/sessions/${sessionId}/stop`, initData, {
       method: 'POST',
       body: JSON.stringify({ actual_ms: actualMs, client_submission_id: clientSubmissionId }),
+    }, SUBMIT_TIMEOUT_MS),
+  mazeState: (initData: string, sessionId: string) =>
+    request<MazeState>(`/api/sessions/${sessionId}`, initData),
+  mazeMove: (initData: string, sessionId: string, direction: string, clientMoveId: string) =>
+    request<MazeState>(`/api/sessions/${sessionId}/direction`, initData, {
+      method: 'POST',
+      body: JSON.stringify({ direction, client_move_id: clientMoveId }),
     }, SUBMIT_TIMEOUT_MS),
   cancel: (initData: string, sessionId: string) =>
     request<{ session_id: string; status: string }>(`/api/sessions/${sessionId}`, initData, {

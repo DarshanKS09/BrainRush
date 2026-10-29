@@ -5,10 +5,16 @@ import logging
 from collections.abc import AsyncGenerator
 from typing import Annotated
 
-from fastapi import Depends, Header, Request
+from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brainrush.api.auth import AuthError, parse_and_verify
+from brainrush.api.ratelimit import (
+    AUTH_LIMITER,
+    EXPENSIVE_LIMITER,
+    INVITE_LIMITER,
+    ROOM_LIMITER,
+)
 from brainrush.config import Settings
 from brainrush.services.users import UserService
 
@@ -30,6 +36,25 @@ async def get_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
 
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+
+
+def _client_ip(request: Request) -> str:
+    """Best-effort client ip for unauthenticated rate limiting."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _rate_limit(limiter, request: Request, key: str) -> None:
+    allowed, remaining = limiter.check(key)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="rate limit exceeded",
+            headers={"Retry-After": "60"},
+        )
+    request.state.rate_limit_remaining = remaining
 
 
 async def get_verified_identity(
@@ -56,6 +81,7 @@ async def get_verified_identity(
         display_name=identity["display_name"],
     )
     request.state.telegram_id = identity["telegram_id"]
+    _rate_limit(AUTH_LIMITER, request, f"auth:{user.id}")
     return {"user_id": user.id, **identity}
 
 
@@ -78,4 +104,41 @@ async def get_verified_telegram_identity(
         dev_telegram_id=settings.DEV_AUTH_TELEGRAM_ID,
     )
     request.state.telegram_id = identity["telegram_id"]
+    _rate_limit(AUTH_LIMITER, request, f"auth:{identity['telegram_id']}")
     return identity
+
+
+# -- Route-scoped rate limit dependencies -----------------------------------
+
+async def rate_limit_auth(request: Request) -> None:
+    """General authenticated API rate limit (keyed by verified user id)."""
+    tid = getattr(request.state, "telegram_id", None)
+    key = f"auth:{tid}" if tid else f"ip:{_client_ip(request)}"
+    _rate_limit(AUTH_LIMITER, request, key)
+
+
+async def rate_limit_room(request: Request) -> None:
+    """Match room create/join rate limit."""
+    tid = getattr(request.state, "telegram_id", None)
+    key = f"room:{tid}" if tid else f"ip:{_client_ip(request)}"
+    _rate_limit(ROOM_LIMITER, request, key)
+
+
+async def rate_limit_invite(request: Request) -> None:
+    """Invitation rate limit."""
+    tid = getattr(request.state, "telegram_id", None)
+    key = f"invite:{tid}" if tid else f"ip:{_client_ip(request)}"
+    _rate_limit(INVITE_LIMITER, request, key)
+
+
+async def rate_limit_expensive(request: Request) -> None:
+    """Expensive endpoint rate limit (leaderboard, large history pages)."""
+    tid = getattr(request.state, "telegram_id", None)
+    key = f"expensive:{tid}" if tid else f"ip:{_client_ip(request)}"
+    _rate_limit(EXPENSIVE_LIMITER, request, key)
+
+
+RateLimitDep = Annotated[None, Depends(rate_limit_auth)]
+RoomLimitDep = Annotated[None, Depends(rate_limit_room)]
+InviteLimitDep = Annotated[None, Depends(rate_limit_invite)]
+ExpensiveLimitDep = Annotated[None, Depends(rate_limit_expensive)]

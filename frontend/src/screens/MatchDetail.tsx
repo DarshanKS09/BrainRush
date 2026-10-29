@@ -95,15 +95,17 @@ export function MatchDetailScreen({
 
   useEffect(() => {
     void load();
+    // Poll only while the match is live; completed matches are stable and
+    // only change on explicit user actions (rematch, etc.).
+    if (timer.current) clearInterval(timer.current);
     timer.current = setInterval(() => {
-      // Poll for lobby joins, opponent finishes, and deadline finalization.
-      // Completed matches are stable: keep one slow poll for rematch state.
+      if (view?.status === 'completed') return;
       void load();
     }, 3000);
     return () => {
       if (timer.current) clearInterval(timer.current);
     };
-  }, [load]);
+  }, [load, view]);
 
   // Reconnect affordance: refresh on tab visibility regain (backgrounding).
   useEffect(() => {

@@ -8,6 +8,9 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
 from brainrush.api.deps import (
+    ExpensiveLimitDep,
+    InviteLimitDep,
+    RoomLimitDep,
     SessionDep,
     get_verified_identity,
     get_verified_telegram_identity,
@@ -23,6 +26,7 @@ from brainrush.services.miniapp import (
     MiniappGameService,
 )
 from brainrush.game import color_sequence as color_game
+from brainrush.game import maze_race as maze_race
 from brainrush.game import number_guessing as guessing
 from brainrush.game import perfect_second as perfect_game
 from brainrush.game import reflex_rush as reflex_game
@@ -43,6 +47,11 @@ class GuessRequest(BaseModel):
 
 class MoveRequest(BaseModel):
     color: int = Field(ge=0, le=3)
+    client_move_id: str = Field(min_length=1, max_length=64)
+
+
+class DirectionRequest(BaseModel):
+    direction: str = Field(min_length=1, max_length=10)
     client_move_id: str = Field(min_length=1, max_length=64)
 
 
@@ -156,6 +165,19 @@ async def games() -> dict:
                 }
                 for did, cfg in reflex_game.REFLEX_DIFFICULTIES.items()
             }
+        elif entry["id"] == "maze_race":
+            item["xp_rules"] = {
+                did: {
+                    "base_xp": cfg.base_xp,
+                    "time_bonus_xp": cfg.time_bonus_xp,
+                    "path_bonus_xp": cfg.path_bonus_xp,
+                    "par_time_s": cfg.par_time_s,
+                    "rows": cfg.rows,
+                    "cols": cfg.cols,
+                    "branching": cfg.branching,
+                }
+                for did, cfg in maze_race.MAZE_DIFFICULTIES.items()
+            }
         catalog.append(item)
     return {"games": catalog}
 
@@ -222,6 +244,21 @@ async def move(
     )
 
 
+@router.post("/sessions/{session_id}/direction")
+async def direction(
+    session_id: uuid.UUID,
+    body: DirectionRequest,
+    identity: IdentityDep,
+    session: SessionDep,
+) -> dict:
+    return await _service(session).direction(
+        session_id=session_id,
+        user_id=identity["user_id"],
+        direction=body.direction,
+        client_move_id=body.client_move_id,
+    )
+
+
 @router.post("/sessions/{session_id}/finish")
 async def finish_reflex(
     session_id: uuid.UUID,
@@ -259,6 +296,7 @@ async def stop_perfect(
 async def history(
     identity: IdentityDep,
     session: SessionDep,
+    _expensive: ExpensiveLimitDep,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> dict:
@@ -273,6 +311,7 @@ async def history(
 async def leaderboard(
     identity: IdentityDep,
     session: SessionDep,
+    _expensive: ExpensiveLimitDep,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> dict:
@@ -392,6 +431,7 @@ async def friend_add(
 async def match_create(
     body: MatchCreateRequest, request: Request,
     identity: IdentityDep, session: SessionDep,
+    _room: RoomLimitDep,
 ) -> dict:
     """Create a match lobby as host. The host is seated immediately."""
     settings: Settings = request.app.state.settings
@@ -451,6 +491,7 @@ async def match_get(
 async def match_join_by_token(
     body: MatchJoinTokenRequest, request: Request,
     identity: IdentityDep, session: SessionDep,
+    _room: RoomLimitDep,
 ) -> dict:
     """Join via share-link token. Idempotent: repeat joins return the lobby."""
     settings: Settings = request.app.state.settings
@@ -463,6 +504,7 @@ async def match_join_by_token(
 async def match_join_by_code(
     body: MatchJoinCodeRequest, request: Request,
     identity: IdentityDep, session: SessionDep,
+    _room: RoomLimitDep,
 ) -> dict:
     """Join via the human-readable room code (manual entry). The code is not
     an authorization secret: identity comes from verified initData.
@@ -477,6 +519,7 @@ async def match_join_by_code(
 async def match_join(
     match_id: uuid.UUID, request: Request,
     identity: IdentityDep, session: SessionDep,
+    _room: RoomLimitDep,
 ) -> dict:
     """Join a known lobby (e.g. from an in-app invitation). Idempotent."""
     settings: Settings = request.app.state.settings
@@ -489,6 +532,7 @@ async def match_join(
 async def match_invite(
     match_id: uuid.UUID, body: MatchInviteRequest, request: Request,
     identity: IdentityDep, session: SessionDep,
+    _invite: InviteLimitDep,
 ) -> dict:
     """Host invites a friend by user id. Friends only; duplicates return
     the stored invitation instead of erroring."""

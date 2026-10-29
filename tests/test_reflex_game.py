@@ -365,6 +365,7 @@ async def test_reflex_get_state_and_cancel_and_dashboard():
         FakeResult(rows=[5]),  # best color
         FakeResult(rows=[900]),  # best reflex score (isolated per game_type)
         FakeResult(rows=[]),  # best perfect error (none yet)
+        FakeResult(rows=[]),  # best maze time (none yet)
         FakeResult(rows=[0]),  # rank
         FakeResult(rows=[]),  # actives
     ])

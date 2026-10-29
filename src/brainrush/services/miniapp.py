@@ -38,6 +38,7 @@ from brainrush.game import number_guessing as guessing
 from brainrush.game import color_sequence as colors
 from brainrush.game import perfect_second as perfect
 from brainrush.game import reflex_rush as reflex
+from brainrush.game import maze_race as maze
 from brainrush.game import multiplayer as mp
 from brainrush.game.progression import level_for_xp
 from brainrush.services import utcnow
@@ -46,18 +47,34 @@ GAME_TYPE_NUMBER_GUESSING = "number_guessing"
 GAME_TYPE_COLOR_SEQUENCE = "color_sequence"
 GAME_TYPE_REFLEX_RUSH = "reflex_rush"
 GAME_TYPE_PERFECT_SECOND = perfect.GAME_TYPE
+GAME_TYPE_MAZE_RACE = maze.GAME_TYPE
 
 # Sessions left `started` longer than this are dead (app closed, failed
 # submit, lobby exit without cancel): genuinely active games finish in
 # minutes, so a day is conservative. Expired rows keep their history.
 STALE_SESSION_TTL = timedelta(hours=24)
 
-PLAYABLE_GAME_TYPES = frozenset({GAME_TYPE_NUMBER_GUESSING, GAME_TYPE_COLOR_SEQUENCE, GAME_TYPE_REFLEX_RUSH, GAME_TYPE_PERFECT_SECOND})
+PLAYABLE_GAME_TYPES = frozenset({GAME_TYPE_NUMBER_GUESSING, GAME_TYPE_COLOR_SEQUENCE, GAME_TYPE_REFLEX_RUSH, GAME_TYPE_PERFECT_SECOND, GAME_TYPE_MAZE_RACE})
 
 DIFFICULTIES: dict[str, guessing.NumberGuessingConfig] = {
     "easy": guessing.NumberGuessingConfig(max_attempts=15),
     "medium": guessing.NumberGuessingConfig(max_attempts=10),
     "hard": guessing.NumberGuessingConfig(),
+}
+
+MAZE_DIFFICULTIES: dict[str, maze.MazeConfig] = {
+    "easy": maze.MazeConfig(
+        rows=9, cols=9, branching=2, par_time_s=60,
+        base_xp=40, time_bonus_xp=20, path_bonus_xp=10,
+    ),
+    "medium": maze.MazeConfig(
+        rows=13, cols=13, branching=6, par_time_s=120,
+        base_xp=70, time_bonus_xp=35, path_bonus_xp=20,
+    ),
+    "hard": maze.MazeConfig(
+        rows=17, cols=17, branching=12, par_time_s=200,
+        base_xp=100, time_bonus_xp=50, path_bonus_xp=30,
+    ),
 }
 
 CATALOG = [
@@ -115,6 +132,23 @@ CATALOG = [
                 "target_step_ms": cfg.step_ms,
             }
             for did, cfg in perfect.PERFECT_DIFFICULTIES.items()
+        ],
+    },
+    {
+        "id": "maze_race",
+        "title": "Maze Race",
+        "description": "Navigate a procedurally generated maze from start to exit. Move through corridors, choose directions at junctions, and beat the clock.",
+        "playable": True,
+        "difficulties": [
+            {
+                "id": did,
+                "max_attempts": cfg.rows * cfg.cols,
+                "rows": cfg.rows,
+                "cols": cfg.cols,
+                "branching": cfg.branching,
+                "par_time_s": cfg.par_time_s,
+            }
+            for did, cfg in MAZE_DIFFICULTIES.items()
         ],
     },
     {
@@ -372,6 +406,11 @@ class MiniappGameService:
                 raise ValueError(
                     f"difficulty must be one of {sorted(perfect.PERFECT_DIFFICULTIES)}"
                 )
+        elif game_type == GAME_TYPE_MAZE_RACE:
+            if difficulty not in MAZE_DIFFICULTIES:
+                raise ValueError(
+                    f"difficulty must be one of {sorted(MAZE_DIFFICULTIES)}"
+                )
         else:
             _config_for(difficulty)  # fail fast, before any DB work
         async with self.session.begin():
@@ -402,6 +441,10 @@ class MiniappGameService:
                 return await self._start_perfect(
                     user_id=user_id, db_row=db_row, difficulty=difficulty,
                     target_ms=target_override,
+                )
+            if game_type == GAME_TYPE_MAZE_RACE:
+                return await self._start_maze(
+                    user_id=user_id, db_row=db_row, difficulty=difficulty,
                 )
             config = _config_for(difficulty)
             secret = guessing.roll_secret(config)
@@ -478,6 +521,218 @@ class MiniappGameService:
             max_attempts=1,
         )
         return _perfect_public_view(state)
+
+    # -- Maze Race -----------------------------------------------------------
+
+    def _maze_public_view(
+        self, state, walls: list[int], player_r: int, player_c: int,
+        visited: list[list[bool]], moves: int, started_at: Any,
+        finished: bool = False, result: dict | None = None,
+    ) -> dict:
+        """Public view for a Maze Race attempt. Walls and the full maze are
+        sent to the client so it can render locally; the server remains
+        authoritative for position and completion."""
+        config = MAZE_DIFFICULTIES[state.difficulty]
+        elapsed_ms = None
+        if started_at is not None:
+            try:
+                elapsed_ms = int((utcnow() - started_at).total_seconds() * 1000)
+            except Exception:
+                elapsed_ms = None
+        valid = maze.valid_directions(walls, config, player_r, player_c)
+        return {
+            "session_id": str(state.session_id),
+            "game_type": GAME_TYPE_MAZE_RACE,
+            "difficulty": state.difficulty,
+            "max_attempts": config.rows * config.cols,
+            "attempts_used": moves,
+            "attempts_left": 0,
+            "maze": maze.serialize_maze(walls, config),
+            "player": {"r": player_r, "c": player_c},
+            "exit": {"r": config.rows - 1, "c": config.cols - 1},
+            "valid_directions": valid,
+            "moves": moves,
+            "elapsed_ms": elapsed_ms,
+            "finished": finished,
+            "result": result,
+            "status": "completed" if finished else "started",
+        }
+
+    async def _start_maze(
+        self, *, user_id, db_row, difficulty: str,
+    ) -> dict:
+        config = MAZE_DIFFICULTIES[difficulty]
+        walls = maze.generate_maze(config)
+        # Verify solvability before committing.
+        path = maze.solve_maze(walls, config)
+        if not path:
+            raise ValueError("generated maze is unsolvable")
+        solution_length = len(path)
+        # Store maze, player position, visited grid, move counter, and
+        # start time in `guesses` (JSONB), mirroring Color Sequence's
+        # use of that column for non-secret game state.
+        state_data = {
+            "game": GAME_TYPE_MAZE_RACE,
+            "difficulty": difficulty,
+            "walls": walls,
+            "player": {"r": 0, "c": 0},
+            "visited": [[False] * config.cols for _ in range(config.rows)],
+            "moves": 0,
+            "started_at": utcnow().isoformat(),
+            "solution_length": solution_length,
+        }
+        state_data["visited"][0][0] = True
+        state = await self.states.create(
+            user_id=user_id,
+            session_id=db_row.id,
+            game_type=GAME_TYPE_MAZE_RACE,
+            difficulty=difficulty,
+            secret=0,
+            max_attempts=config.rows * config.cols,
+        )
+        state.guesses = state_data
+        await self.session.flush()
+        return self._maze_public_view(
+            state, walls, 0, 0, state_data["visited"], 0,
+            state_data["started_at"],
+        )
+
+    async def direction(
+        self,
+        *,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID,
+        direction: str,
+        client_move_id: str,
+    ) -> dict:
+        """Submit one movement direction. Idempotent per client_move_id.
+
+        Movement advances exactly one cell. The caller repeats this for
+        each junction/turn decision; straight corridors are walked cell by
+        cell under the hood so the player never has to press per tile.
+        """
+        if not isinstance(client_move_id, str) or not client_move_id.strip():
+            raise ValueError("client_move_id must be a non-empty string")
+        if direction not in ("up", "right", "down", "left"):
+            raise ValueError("direction must be up, right, down, or left")
+        async with self.session.begin():
+            state = await self.states.get_for_update(session_id=session_id)
+            if state is None or state.user_id != user_id:
+                return await self._replay_or_missing(session_id, user_id)
+            if state.game_type != GAME_TYPE_MAZE_RACE:
+                raise ValueError("this game uses the direction endpoint")
+            data = dict(state.guesses or {})
+            if data.get("game") != GAME_TYPE_MAZE_RACE:
+                raise ValueError("stored maze state is invalid")
+            if any(entry.get("id") == client_move_id for entry in data.get("log", [])):
+                return self._maze_public_view(
+                    state,
+                    maze.deserialize_maze(data["walls"]),
+                    data["player"]["r"], data["player"]["c"],
+                    data["visited"], data["moves"],
+                    data.get("started_at"),
+                )
+            walls = maze.deserialize_maze(data["walls"])
+            config = MAZE_DIFFICULTIES[state.difficulty]
+            r, c = data["player"]["r"], data["player"]["c"]
+            try:
+                nr, nc, _moved = maze.move_player(walls, config, r, c, direction)
+            except InvalidMoveError as exc:
+                raise ValueError(str(exc)) from None
+            # Log the move.
+            log = list(data.get("log", []))
+            log.append({"id": client_move_id, "direction": direction, "from": [r, c], "to": [nr, nc]})
+            data["player"] = {"r": nr, "c": nc}
+            data["moves"] = data.get("moves", 0) + 1
+            data["visited"][nr][nc] = True
+            data["log"] = log
+            # Check completion.
+            if nr == config.rows - 1 and nc == config.cols - 1:
+                return await self._complete_maze(state, data, walls)
+            state.guesses = data
+            await self.session.flush()
+            return self._maze_public_view(
+                state, walls, nr, nc, data["visited"], data["moves"],
+                data.get("started_at"),
+            )
+
+    async def _complete_maze(self, state, data: dict, walls: list[int]) -> dict:
+        from brainrush.services import utcnow as _utcnow
+
+        config = MAZE_DIFFICULTIES[state.difficulty]
+        moment = _utcnow()
+        started = data.get("started_at")
+        started_dt = None
+        if started:
+            try:
+                from datetime import datetime
+                started_dt = datetime.fromisoformat(started)
+            except Exception:
+                started_dt = None
+        elapsed_ms = 0
+        if started_dt is not None:
+            elapsed_ms = int((moment - started_dt).total_seconds() * 1000)
+        moves_used = data.get("moves", 0)
+        solution_length = data.get("solution_length", 1)
+        xp_breakdown = maze.xp_for_completion(
+            elapsed_ms=elapsed_ms,
+            moves_used=moves_used,
+            solution_length=solution_length,
+            config=config,
+        )
+        xp_earned = xp_breakdown["total"]
+        metadata = {
+            "game": GAME_TYPE_MAZE_RACE,
+            "difficulty": state.difficulty,
+            "rows": config.rows,
+            "cols": config.cols,
+            "elapsed_ms": elapsed_ms,
+            "moves": moves_used,
+            "solution_length": solution_length,
+            "xp_breakdown": xp_breakdown,
+            "log": data.get("log", []),
+        }
+        session_row = await self.sessions.finish(
+            session_id=state.session_id,
+            status="completed",
+            score=elapsed_ms,
+            ended_at=moment,
+            duration_seconds=None,
+        )
+        result_row = await self.results.record(
+            session_id=state.session_id,
+            score=elapsed_ms,
+            outcome="win",
+            xp_earned=xp_earned,
+            metadata=metadata,
+        )
+        profile = await self.profiles.record_game(
+            user_id=state.user_id,
+            xp_earned=xp_earned,
+            won=True,
+            new_level=None,
+        )
+        await self.profiles.set_level(
+            user_id=state.user_id, level=level_for_xp(profile.total_xp)
+        )
+        await self.activities.add_play(
+            user_id=state.user_id, day=moment.date(), xp_earned=xp_earned
+        )
+        await self.states.delete(state)
+        return self._maze_public_view(
+            state, walls, data["player"]["r"], data["player"]["c"],
+            data["visited"], data["moves"],
+            data.get("started_at"),
+            finished=True,
+            result={
+                "outcome": "win",
+                "score": elapsed_ms,
+                "xp_earned": xp_earned,
+                "elapsed_ms": elapsed_ms,
+                "moves": moves_used,
+                "xp_breakdown": xp_breakdown,
+            },
+        )
 
     async def stop_perfect(
         self,
@@ -882,6 +1137,29 @@ class MiniappGameService:
                 g for g in meta.get("rounds", [])
                 if isinstance(g, dict)
             ]
+        elif meta.get("game") == GAME_TYPE_MAZE_RACE:
+            walls = maze.deserialize_maze({
+                "rows": meta.get("rows", 9),
+                "cols": meta.get("cols", 9),
+                "cells": [
+                    {"r": r, "c": c, "walls": {"up": False, "right": False, "down": False, "left": False}}
+                    for r in range(meta.get("rows", 9)) for c in range(meta.get("cols", 9))
+                ],
+            }) if meta.get("rows") and meta.get("cols") else []
+            player = meta.get("player", {"r": 0, "c": 0})
+            return self._maze_public_view(
+                None, walls, player.get("r", 0), player.get("c", 0),
+                [], meta.get("moves", 0),
+                None, finished=True,
+                result={
+                    "outcome": result_row.outcome,
+                    "score": result_row.score,
+                    "xp_earned": result_row.xp_earned,
+                    "elapsed_ms": meta.get("elapsed_ms"),
+                    "moves": meta.get("moves"),
+                    "xp_breakdown": meta.get("xp_breakdown"),
+                },
+            )
         else:
             stored = [
                 {"id": f"past-{i}", "value": v}
@@ -901,6 +1179,14 @@ class MiniappGameService:
                     return _reflex_public_view(state)
                 if state.game_type == GAME_TYPE_PERFECT_SECOND:
                     return _perfect_public_view(state)
+                if state.game_type == GAME_TYPE_MAZE_RACE:
+                    data = dict(state.guesses or {})
+                    walls = maze.deserialize_maze(data["walls"])
+                    return self._maze_public_view(
+                        state, walls, data["player"]["r"], data["player"]["c"],
+                        data["visited"], data.get("moves", 0),
+                        data.get("started_at"),
+                    )
                 return _public_view(state, list(state.guesses or []))
             return await self._replay_or_missing(session_id, user_id)
 
@@ -952,6 +1238,9 @@ class MiniappGameService:
             best_perfect = await self.results.best_win_score(
                 user_id=user_id, game_type=GAME_TYPE_PERFECT_SECOND
             )
+            best_maze = await self.results.best_win_score(
+                user_id=user_id, game_type=GAME_TYPE_MAZE_RACE
+            )
             rank = await self.profiles.rank_by_xp(total_xp=profile.total_xp)
             actives = await self.states.list_active_by_user(user_id=user_id)
             progress = progress_for_xp(profile.total_xp)
@@ -980,6 +1269,7 @@ class MiniappGameService:
                 "best_color_level": best_color,
                 "best_reflex_score": best_reflex,
                 "best_perfect_error_ms": best_perfect,
+                "best_maze_time_ms": best_maze,
                 "rank": rank,
                 "active_games": [
                     _active_view(state) for state, _ in actives

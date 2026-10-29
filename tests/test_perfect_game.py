@@ -404,6 +404,7 @@ async def test_perfect_get_state_cancel_and_dashboard():
         FakeResult(rows=[5]),  # best color
         FakeResult(rows=[900]),  # best reflex score
         FakeResult(rows=[250]),  # best perfect error (ms, won games)
+        FakeResult(rows=[]),  # best maze time (none yet)
         FakeResult(rows=[0]),  # rank
         FakeResult(rows=[]),  # actives
     ])
@@ -565,8 +566,11 @@ def test_perfect_routes_and_catalog(monkeypatch):
     assert entry["xp_rules"]["hard"]["perfect"] == 100
 
 
-def test_catalog_lists_four_playable_games():
+def test_catalog_lists_five_playable_games():
     ids = [e["id"] for e in CATALOG if e["playable"]]
     assert ids == ["number_guessing", "color_sequence", "reflex_rush",
-                   "perfect_second"]
+                   "perfect_second", "maze_race"]
     assert GAME_TYPE_PERFECT_SECOND == "perfect_second"
+    maze_entry = next(e for e in CATALOG if e["id"] == "maze_race")
+    assert maze_entry["playable"] is True
+    assert {d["id"] for d in maze_entry["difficulties"]} == {"easy", "medium", "hard"}

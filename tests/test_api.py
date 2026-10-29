@@ -91,7 +91,7 @@ def _client(monkeypatch, **settings_kw):
                      session_factory=_dummy_factory())
 
     async def fake_session(request: Request):
-        yield object()
+        yield _FakeSession()
 
     async def fake_identity(request: Request):
         request.state.telegram_id = 777
@@ -104,9 +104,19 @@ def _client(monkeypatch, **settings_kw):
     return TestClient(app, raise_server_exceptions=False)
 
 
+class _FakeSession:
+    """Minimal session double that supports execute() for health checks."""
+
+    async def execute(self, *args, **kwargs):
+        class _Result:
+            def scalar_one_or_none(self):
+                return 1
+        return _Result()
+
+
 class _DummyCM:
     async def __aenter__(self):
-        return object()
+        return _FakeSession()
 
     async def __aexit__(self, *exc):
         return False
@@ -123,7 +133,7 @@ def _auth_client(monkeypatch):
     app = create_app(_settings(), session_factory=_dummy_factory())
 
     async def fake_session(request: Request):
-        yield object()
+        yield _FakeSession()
 
     app.dependency_overrides[_gs] = fake_session
     monkeypatch.setattr(routes, "MiniappGameService", StubService)
@@ -282,3 +292,73 @@ def test_color_catalog_lists_difficulties(monkeypatch):
     assert color["playable"] is True
     assert {d["id"] for d in color["difficulties"]} == {"easy", "medium", "hard"}
     assert color["xp_rules"]["hard"]["win"] == 12 * 10 + 80
+
+
+def test_ready_endpoint_returns_ok(monkeypatch):
+    client = _client(monkeypatch)
+    response = client.get("/ready")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}
+
+
+def test_config_masked_hides_db_password():
+    from brainrush.config import Settings
+
+    s = Settings(
+        BOT_TOKEN="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz",
+        DATABASE_URL="postgresql+asyncpg://postgres:secretpassword@host.example.com:5432/db",
+    )
+    masked = s.masked()
+    assert "secretpassword" not in masked["DATABASE_URL"]
+    assert masked["DATABASE_URL"] == (
+        "postgresql+asyncpg://postgres:***@host.example.com:5432/db"
+    )
+    assert masked["BOT_TOKEN"] == "1234...wxyz"
+
+
+def test_rate_limit_returns_429_when_exceeded(monkeypatch):
+    """Rate limiter is in-memory; test by creating a fresh app with a tiny
+    limit and hitting it repeatedly."""
+    from brainrush.api import routes
+    from brainrush.api.app import create_app
+    from brainrush.api.deps import get_session, get_verified_identity
+    from brainrush.config import Settings
+    from brainrush.api.ratelimit import RateLimiter
+
+    # Override the global limiter with a tiny limit for this test.
+    import brainrush.api.deps as deps_module
+    original_limiter = deps_module.AUTH_LIMITER
+    deps_module.AUTH_LIMITER = RateLimiter(limit=2, window_seconds=60)
+    try:
+        settings = Settings(
+            BOT_TOKEN="test-token",
+            DATABASE_URL="postgresql+asyncpg://u:p@localhost:5432/db",
+        )
+        app = create_app(settings, session_factory=_dummy_factory())
+
+        async def fake_session(request: Request):
+            yield _FakeSession()
+
+        async def fake_identity(request: Request):
+            request.state.telegram_id = 777
+            # Mimic the real dependency: rate limit then return identity.
+            from brainrush.api.deps import _rate_limit
+            _rate_limit(deps_module.AUTH_LIMITER, request, f"auth:777")
+            return {"user_id": UID, "telegram_id": 777,
+                    "username": "carol", "display_name": "Carol D"}
+
+        app.dependency_overrides[get_session] = fake_session
+        app.dependency_overrides[get_verified_identity] = fake_identity
+        monkeypatch.setattr(routes, "MiniappGameService", StubService)
+        client = TestClient(app, raise_server_exceptions=False)
+        headers = {"X-Telegram-Init-Data": "anything"}
+
+        r1 = client.get("/api/me", headers=headers)
+        r2 = client.get("/api/me", headers=headers)
+        r3 = client.get("/api/me", headers=headers)
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert r3.status_code == 429
+        assert "Retry-After" in r3.headers
+    finally:
+        deps_module.AUTH_LIMITER = original_limiter

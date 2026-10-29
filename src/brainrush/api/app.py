@@ -7,8 +7,10 @@ import time
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from brainrush.api.auth import AuthError
+from brainrush.api.deps import SessionDep
 from brainrush.api.routes import router
 from brainrush.config import Settings
 from brainrush.db.errors import ConflictError, NotFoundError
@@ -71,8 +73,29 @@ def create_app(settings: Settings, session_factory) -> FastAPI:
         return JSONResponse(status_code=500, content={"detail": "internal error"})
 
     @app.get("/health")
-    async def health() -> dict:
-        return {"status": "ok"}
+    async def health(session: SessionDep) -> dict:
+        """Lightweight liveness check. Verifies DB connectivity with SELECT 1."""
+        try:
+            await session.execute(text("SELECT 1"))
+            return {"status": "ok"}
+        except Exception:
+            log.error("health check: database unreachable", exc_info=True)
+            return JSONResponse(status_code=503, content={"status": "db_unreachable"})
+
+    @app.get("/ready")
+    async def ready(session: SessionDep) -> dict:
+        """Readiness check: same as health for now (no optional services).
+
+        Kept separate from /health so providers can distinguish liveness
+        from readiness without optional-service failures removing healthy
+        instances.
+        """
+        try:
+            await session.execute(text("SELECT 1"))
+            return {"status": "ready"}
+        except Exception:
+            log.error("readiness check: database unreachable", exc_info=True)
+            return JSONResponse(status_code=503, content={"status": "db_unreachable"})
 
     app.include_router(router)
 

@@ -18,7 +18,7 @@ export function difficultyDisplayName(gameId: string, id: string): string {
 /** One-line difficulty summary, per game (attempts vs rounds). */
 export function difficultySub(
   gameId: string,
-  d: { id: string; max_attempts: number; start_length?: number; wait_min_ms?: number; wait_max_ms?: number; target_min_ms?: number; target_max_ms?: number; target_step_ms?: number },
+  d: { id: string; max_attempts: number; start_length?: number; wait_min_ms?: number; wait_max_ms?: number; target_min_ms?: number; target_max_ms?: number; target_step_ms?: number; rows?: number; cols?: number; branching?: number; par_time_s?: number },
 ): string {
   if (gameId === 'color_sequence') {
     return `Up to ${d.max_attempts} rounds · starts at ${d.start_length ?? '?'}`;
@@ -37,6 +37,12 @@ export function difficultySub(
       return `Targets ${(d.target_min_ms / 1000).toString().replace(/\.0$/, '')}–${d.target_max_ms / 1000} s${stepText ? ` · ${stepText}` : ''}`;
     }
     return `Stop on the target`;
+  }
+  if (gameId === 'maze_race') {
+    if (d.rows !== undefined && d.cols !== undefined) {
+      return `${d.rows}×${d.cols} grid · ${d.branching} branches · par ${d.par_time_s}s`;
+    }
+    return 'Navigate the maze';
   }
   return difficultyBlurb(d.max_attempts);
 }
@@ -100,6 +106,7 @@ export function gameTitle(gameType: string): string {
   if (gameType === 'number_guessing') return 'Number Guessing';
   if (gameType === 'reflex_rush') return 'Reflex Rush';
   if (gameType === 'perfect_second') return 'Perfect Second';
+  if (gameType === 'maze_race') return 'Maze Race';
   return gameType;
 }
 
