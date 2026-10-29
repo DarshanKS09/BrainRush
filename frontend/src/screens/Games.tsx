@@ -24,12 +24,10 @@ const MODE_LABELS: Record<string, string> = {
 export function GamesScreen({
   ctx,
   onStart,
-  onOpenMatch,
   onSetupMatch,
 }: {
   ctx: WebAppContext;
   onStart: (gameId: string, sessionId: string) => void;
-  onOpenMatch?: (matchId: string) => void;
   onSetupMatch?: () => void;
 }) {
   const [games, setGames] = useState<GameInfo[]>([]);

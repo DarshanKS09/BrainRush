@@ -277,7 +277,6 @@ export default function App() {
           <GamesScreen
             ctx={ctx}
             onStart={(gameId, sessionId) => setRoute({ name: 'play', gameId, sessionId })}
-            onOpenMatch={(matchId) => setRoute({ name: 'match', matchId })}
             onSetupMatch={() => setRoute({ name: 'setup-match' })}
           />
         )}
