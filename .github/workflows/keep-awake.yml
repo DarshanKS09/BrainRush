@@ -1,0 +1,27 @@
+# Keeps the Render API instance warm so the Mini App's first launch never
+# rides a cold start.
+#
+# Root cause this prevents (measured against the deployed backend):
+#   - After ~15 min idle, Render spins the instance down.
+#   - First request after idle is held ~45 s while the instance wakes
+#     (probe: GET /health -> 200 in 45.06 s; warm requests: 0.3–1.5 s).
+#   - The dashboard's first-launch bootstrap (Promise.all of GET /api/me +
+#     GET /api/history, no client timeout) absorbs that stall, so the
+#     dashboard appears broken until the user plays a game (waking the
+#     backend) and returns to Home.
+# Pinging /health every 5 min (well under the 15-min spin-down threshold,
+# with slack for GitHub cron delays) keeps the instance resident.
+name: Keep API awake
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: # manual wake, e.g. right after a deploy
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend health endpoint
+        # -f: fail the job on non-2xx so a dead backend is visible in Actions.
+        run: curl -fsS --max-time 90 https://brainrush-w9tp.onrender.com/health

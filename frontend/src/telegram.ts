@@ -72,9 +72,12 @@ function launchStartParam(unsafeParam: string | undefined, search: string): stri
 }
 
 export function initWebApp(): WebAppContext {
+  // [diag] TEMPORARY startup diagnostics: existence + LENGTH only, never contents.
+  const started = performance.now();
   const wa = window.Telegram?.WebApp;
   const mock = devMockUser();
   if (mock) {
+    console.debug('[diag] initWebApp dev-mock (prod build ignores devuser)');
     return {
       initData: 'dev',
       user: mock,
@@ -85,6 +88,7 @@ export function initWebApp(): WebAppContext {
     };
   }
   if (!wa) {
+    console.debug('[diag] initWebApp: window.Telegram.WebApp MISSING (non-Telegram browser)');
     return { initData: '', user: null, displayName: 'Guest', isTelegram: false, isDevMock: false, startParam: null };
   }
   try {
@@ -97,7 +101,11 @@ export function initWebApp(): WebAppContext {
   const displayName =
     [user?.first_name, user?.last_name].filter(Boolean).join(' ') || user?.username || 'Player';
   const startParam = launchStartParam(wa.initDataUnsafe?.start_param, window.location.search);
-  return { initData: wa.initData || '', user, displayName, isTelegram: true, isDevMock: false, startParam };
+  const initData = wa.initData || '';
+  console.debug(
+    `[diag] initWebApp: initData present=${initData.length > 0} length=${initData.length} hasUser=${user !== null} (+${Math.round(performance.now() - started)}ms)`,
+  );
+  return { initData, user, displayName, isTelegram: true, isDevMock: false, startParam };
 }
 
 export function haptic(kind: 'light' | 'success' | 'error' = 'light'): void {

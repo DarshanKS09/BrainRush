@@ -21,7 +21,8 @@ describe('api client', () => {
     expect(me.profile.level).toBe(2);
     expect(fetch).toHaveBeenCalledOnce();
     const [url, init] = fetch.mock.calls[0] as [string, RequestInit & { headers: Record<string, string> }];
-    expect(url).toBe('/api/me');
+    // Hermetic: same-origin when VITE_API_URL is empty, configured base otherwise.
+    expect(url).toBe(`${(import.meta.env.VITE_API_URL as string | undefined) || ''}/api/me`);
     expect(init.headers['X-Telegram-Init-Data']).toBe('INIT-DATA-123');
   });
 
@@ -39,7 +40,8 @@ describe('api client', () => {
   });
 
   it('buildUrl respects empty base (same origin)', () => {
-    expect(buildUrl('/api/me')).toBe('/api/me');
+    const base = (import.meta.env.VITE_API_URL as string | undefined) || '';
+    expect(buildUrl('/api/me')).toBe(`${base}/api/me`);
   });
 
   it('generates unique client guess ids', () => {

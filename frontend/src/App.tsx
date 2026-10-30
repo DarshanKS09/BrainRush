@@ -72,6 +72,15 @@ export default function App() {
   const [claimFailed, setClaimFailed] = useState(false);
   const [claimAttempt, setClaimAttempt] = useState(0);
 
+  // [diag] TEMPORARY: first-launch auth initialization start. initData is
+  // auth INPUT sent per request as X-Telegram-Init-Data — length only.
+  useEffect(() => {
+    console.debug(
+      `[diag] App auth init start: initDataLength=${ctx.initData.length} isDevMock=${ctx.isDevMock} pendingReferral=${pendingCode !== null} matchInvite=${matchToken !== null}`,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (!pendingCode || !ctx.initData || claimDone) return;
     if (referralParam) writePendingReferral(referralParam);

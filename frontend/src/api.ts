@@ -367,15 +367,30 @@ async function request<T>(
   init?: RequestInit,
   timeoutMs?: number,
 ): Promise<T> {
-  const response = await fetch(buildUrl(path), {
-    ...init,
-    signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : init?.signal ?? null,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Telegram-Init-Data': initData,
-      ...(init?.headers || {}),
-    },
-  });
+  // [diag] TEMPORARY: per-request visibility (path/method/status/duration).
+  // Never logs initData, headers, or bodies.
+  const t0 = performance.now();
+  const method = init?.method ?? 'GET';
+  let response: Response;
+  try {
+    response = await fetch(buildUrl(path), {
+      ...init,
+      signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : init?.signal ?? null,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Telegram-Init-Data': initData,
+        ...(init?.headers || {}),
+      },
+    });
+  } catch (e) {
+    console.debug(
+      `[diag] api ${method} ${path} NETWORK-FAIL after ${Math.round(performance.now() - t0)}ms: ${e instanceof Error ? e.name : 'unknown'}`,
+    );
+    throw e;
+  }
+  console.debug(
+    `[diag] api ${method} ${path} -> ${response.status} (${Math.round(performance.now() - t0)}ms)`,
+  );
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
     try {

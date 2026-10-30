@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type DashboardData, type HistoryItem } from '../api';
+import { api, ApiError, type DashboardData, type HistoryItem } from '../api';
 import { formatDate, gameTitle, resumeHint, sessionStatusLabel } from '../gameutil';
 import type { WebAppContext } from '../telegram';
 import { ErrorNotice, Loading, SectionTitle, StatTile, XpBar } from '../components/ui';
@@ -21,12 +21,24 @@ export function HomeScreen({
   const load = () => {
     setLoading(true);
     setError('');
+    // [diag] TEMPORARY: dashboard data loading start/complete (status only).
+    console.debug('[diag] dashboard load start (GET /api/me + /api/history)');
+    const t0 = performance.now();
     Promise.all([api.me(ctx.initData), api.history(ctx.initData, 5, 0)])
       .then(([me, hist]) => {
+        console.debug(
+          `[diag] dashboard load OK in ${Math.round(performance.now() - t0)}ms (history=${hist.items.length}, activeGames=${me.active_games.length})`,
+        );
         setData(me);
         setHistory(hist.items);
       })
-      .catch((e: Error) => setError(e.message))
+      .catch((e: unknown) => {
+        const status = e instanceof ApiError ? e.status : 'network';
+        console.debug(
+          `[diag] dashboard load FAILED after ${Math.round(performance.now() - t0)}ms: status=${status}`,
+        );
+        setError(e instanceof Error ? e.message : 'Failed to load.');
+      })
       .finally(() => setLoading(false));
   };
 

@@ -53,6 +53,10 @@ def create_app(settings: Settings, session_factory) -> FastAPI:
 
     @app.exception_handler(AuthError)
     async def auth_failed(request: Request, exc: AuthError):
+        # [diag] TEMPORARY: auth failure reason. AuthError messages are fixed
+        # strings ("missing/invalid/expired/malformed") — never initData,
+        # tokens, or user payload details.
+        log.info("[diag] initData verification FAILED: %s", exc)
         return JSONResponse(status_code=401, content={"detail": str(exc)})
 
     @app.exception_handler(NotFoundError)

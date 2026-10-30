@@ -75,6 +75,9 @@ async def get_verified_identity(
         allow_dev=settings.ALLOW_DEV_AUTH,
         dev_telegram_id=settings.DEV_AUTH_TELEGRAM_ID,
     )
+    # [diag] TEMPORARY: validation succeeded (no payload/token logged; the
+    # access log right after shows method/path/status/latency + user uuid).
+    log.info("[diag] initData verification OK")
     user, _ = await UserService(session).get_or_register(
         telegram_id=identity["telegram_id"],
         username=identity["username"],

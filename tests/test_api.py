@@ -167,6 +167,29 @@ def test_bad_token_rejected(monkeypatch):
     assert response.status_code == 401
 
 
+def test_auth_failure_returns_fixed_reason_never_secrets(monkeypatch):
+    """401 body carries a fixed reason string only — no initData, hash, or token.
+
+    Regression for first-launch diagnostics: auth failures must stay opaque
+    while remaining distinguishable (missing/malformed/invalid/expired).
+    """
+    client = _auth_client(monkeypatch)
+    secretish = "user=%7B%22id%22%3A777%7D&auth_date=1&hash=deadbeefcafe0123"
+    response = client.get("/api/me", headers={"X-Telegram-Init-Data": secretish})
+    assert response.status_code == 401
+    detail = response.json()["detail"]
+    assert detail in {
+        "missing authentication data",
+        "malformed authentication data",
+        "malformed user data",
+        "invalid signature",
+        "invalid authentication data",
+        "authentication data expired",
+    }
+    assert "deadbeef" not in response.text
+    assert "test-token" not in response.text
+
+
 def test_dashboard_games_history_leaderboard(monkeypatch):
     client = _client(monkeypatch)
     headers = {"X-Telegram-Init-Data": "anything"}

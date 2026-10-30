@@ -48,26 +48,29 @@ async function openReflexModal() {
   render(<GamesScreen ctx={ctx} onStart={noop} />);
   await act(async () => {});
   await act(async () => {});
-  fireEvent.click(screen.getByRole('button', { name: 'Play' }));
+  // The grid uses GameTile (aria-label = game title); tapping it opens the
+  // details dialog that hosts the difficulty chips under test.
+  fireEvent.click(screen.getByRole('button', { name: 'Reflex Rush' }));
   await act(async () => {});
 }
 
 describe('GamesScreen reflex difficulty', () => {
   it('shows the exact wait behavior for the selected mode', async () => {
     await openReflexModal();
-    // Medium is the default selection.
-    expect(screen.getByText(/Wait varies: 1–3 s/)).toBeInTheDocument();
+    // Medium is the default selection. Copy = difficultySub() as rendered by
+    // DifficultyChips in the game details dialog.
+    expect(screen.getByText(/Waits 1–3 s/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Easy/ }));
     await act(async () => {});
-    expect(screen.getByText(/Same wait every round: 2 s/)).toBeInTheDocument();
+    expect(screen.getByText(/Fixed 2 s wait/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Hard/ }));
     await act(async () => {});
-    expect(screen.getByText(/Wait varies: 0\.5–3\.5 s/)).toBeInTheDocument();
+    expect(screen.getByText(/Waits 0\.5–3\.5 s/)).toBeInTheDocument();
   });
 
-  it('documents false starts, scoring and the win rule', async () => {
-    await openReflexModal();
-    expect(screen.getByText(/false start.*0 points/i)).toBeInTheDocument();
-    expect(screen.getByText(/Win: average ≤ 550 ms with at most 1 false start/)).toBeInTheDocument();
-  });
+  // NOTE: "false starts / scoring / win rule" documentation no longer renders
+  // in the games dialog — it lives in the in-game instructions (ReflexPlay),
+  // which ReflexPlay.test.tsx already asserts (/false start/i and the
+  // 0-points penalty). The old "Win: average ≤ …" dialog copy was removed
+  // along with the card-based UI; no production source renders it anymore.
 });
