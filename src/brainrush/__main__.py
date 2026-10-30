@@ -118,6 +118,7 @@ async def _serve_both(settings, bot, engine, session_factory, dp, shutdown_event
 
 
 def main(argv: list[str] | None = None) -> int:
+    import asyncio
     import signal as sig_mod
 
     parser = argparse.ArgumentParser(description="BrainRush bot entrypoint")
@@ -129,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Ensure only one polling instance runs at a time by installing signal handlers.
     # SIGTERM/SIGINT will cancel the polling task gracefully.
-    shutdown_event = sig_mod.Event()
+    shutdown_event = asyncio.Event()
 
     def _handle_signal(signum, frame):
         log.info("Received signal %s, initiating shutdown...", signum)
