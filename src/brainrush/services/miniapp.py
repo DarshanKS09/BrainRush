@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import timedelta
+from types import SimpleNamespace
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -285,7 +286,21 @@ def _perfect_public_view(state) -> dict:
     }
 
 
-def _active_view(state) -> dict:
+def _stored_maze_walls(raw: Any) -> list[int]:
+    """Decode the wall array stored on a Maze Race state row.
+
+    `_start_maze` persists the generator's raw bitmask list (one int per
+    cell); the serialized dict form is accepted too so either encoding
+    round-trips.
+    """
+    if isinstance(raw, list):
+        return list(raw)
+    if isinstance(raw, dict):
+        return maze.deserialize_maze(raw)
+    raise ValueError("stored maze state is invalid")
+
+
+def _active_view(state, service) -> dict:
     """Public view for a resumed game, dispatched by game type."""
     if state.game_type == GAME_TYPE_COLOR_SEQUENCE:
         return _color_public_view(state, dict(state.guesses or {}))
@@ -293,6 +308,16 @@ def _active_view(state) -> dict:
         return _reflex_public_view(state)
     if state.game_type == GAME_TYPE_PERFECT_SECOND:
         return _perfect_public_view(state)
+    if state.game_type == GAME_TYPE_MAZE_RACE:
+        # Same state construction as get_state()'s maze branch: the state
+        # row carries walls, player, visited grid, moves, and start time.
+        data = dict(state.guesses or {})
+        walls = _stored_maze_walls(data["walls"])
+        return service._maze_public_view(
+            state, walls, data["player"]["r"], data["player"]["c"],
+            data["visited"], data.get("moves", 0),
+            data.get("started_at"),
+        )
     return _public_view(state, list(state.guesses or []))
 
 
@@ -627,12 +652,12 @@ class MiniappGameService:
             if any(entry.get("id") == client_move_id for entry in data.get("log", [])):
                 return self._maze_public_view(
                     state,
-                    maze.deserialize_maze(data["walls"]),
+                    _stored_maze_walls(data["walls"]),
                     data["player"]["r"], data["player"]["c"],
                     data["visited"], data["moves"],
                     data.get("started_at"),
                 )
-            walls = maze.deserialize_maze(data["walls"])
+            walls = _stored_maze_walls(data["walls"])
             config = MAZE_DIFFICULTIES[state.difficulty]
             r, c = data["player"]["r"], data["player"]["c"]
             try:
@@ -1138,17 +1163,31 @@ class MiniappGameService:
                 if isinstance(g, dict)
             ]
         elif meta.get("game") == GAME_TYPE_MAZE_RACE:
+            # The state row is deleted on completion, so hand the view
+            # builder a stand-in carrying only what it reads off the state:
+            # a validated difficulty and the session id.
+            difficulty = meta.get("difficulty")
+            if difficulty not in MAZE_DIFFICULTIES:
+                difficulty = "medium"
+            config = MAZE_DIFFICULTIES[difficulty]
+            # Completed runs store no wall data; render an open grid of the
+            # matching size (the replay screen shows time/moves/XP).
             walls = maze.deserialize_maze({
-                "rows": meta.get("rows", 9),
-                "cols": meta.get("cols", 9),
+                "rows": config.rows,
+                "cols": config.cols,
                 "cells": [
                     {"r": r, "c": c, "walls": {"up": False, "right": False, "down": False, "left": False}}
-                    for r in range(meta.get("rows", 9)) for c in range(meta.get("cols", 9))
+                    for r in range(config.rows) for c in range(config.cols)
                 ],
-            }) if meta.get("rows") and meta.get("cols") else []
-            player = meta.get("player", {"r": 0, "c": 0})
+            })
+            player = meta.get("player") or {}
+            r, c = player.get("r", 0), player.get("c", 0)
+            if not (isinstance(r, int) and isinstance(c, int)
+                    and 0 <= r < config.rows and 0 <= c < config.cols):
+                r, c = 0, 0
             return self._maze_public_view(
-                None, walls, player.get("r", 0), player.get("c", 0),
+                SimpleNamespace(difficulty=difficulty, session_id=session_row.id),
+                walls, r, c,
                 [], meta.get("moves", 0),
                 None, finished=True,
                 result={
@@ -1181,7 +1220,7 @@ class MiniappGameService:
                     return _perfect_public_view(state)
                 if state.game_type == GAME_TYPE_MAZE_RACE:
                     data = dict(state.guesses or {})
-                    walls = maze.deserialize_maze(data["walls"])
+                    walls = _stored_maze_walls(data["walls"])
                     return self._maze_public_view(
                         state, walls, data["player"]["r"], data["player"]["c"],
                         data["visited"], data.get("moves", 0),
@@ -1272,7 +1311,7 @@ class MiniappGameService:
                 "best_maze_time_ms": best_maze,
                 "rank": rank,
                 "active_games": [
-                    _active_view(state) for state, _ in actives
+                    _active_view(state, self) for state, _ in actives
                 ],
             }
 

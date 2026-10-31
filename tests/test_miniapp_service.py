@@ -5,7 +5,8 @@ from datetime import date
 import pytest
 
 from brainrush.db.errors import NotFoundError
-from brainrush.db.models import DailyActivity, GameSession, PlayerProfile, User, WebappGameState
+from brainrush.db.models import DailyActivity, GameResult, GameSession, PlayerProfile, User, WebappGameState
+from brainrush.game.maze_race import MAZE_DIFFICULTIES
 from brainrush.services.miniapp import MiniappGameService
 from tests.test_repositories import FakeResult, RecordingSession
 
@@ -299,3 +300,247 @@ async def test_history_expires_stale_before_reading():
     assert items[0]["status"] == "expired"
     assert items[0]["outcome"] is None and items[0]["xp_earned"] == 0
     assert session.tx_committed == 1 and session.commits == 0
+
+
+# --- Maze Race regressions -------------------------------------------------
+# Production-shaped fixtures: `_start_maze` stores the wall bitmasks as a
+# raw int list in `guesses["walls"]` (confirmed against the live DB), and a
+# dashboard call must render any active state without raising.
+
+
+def _maze_state(user_id, session_id, difficulty="medium", player=None, moves=0):
+    config = MAZE_DIFFICULTIES[difficulty]
+    guesses = {
+        "game": "maze_race",
+        "difficulty": difficulty,
+        "walls": [0] * (config.rows * config.cols),  # all cells open (deterministic)
+        "player": dict(player or {"r": 0, "c": 0}),
+        "visited": [[False] * config.cols for _ in range(config.rows)],
+        "moves": moves,
+        "started_at": "2026-10-30T16:07:41+00:00",
+        "solution_length": 25,
+    }
+    guesses["visited"][0][0] = True
+    row = WebappGameState(
+        user_id=user_id, session_id=session_id, game_type="maze_race",
+        difficulty=difficulty, secret=0, max_attempts=config.rows * config.cols,
+        guesses=guesses,
+    )
+    row.id = uuid.uuid4()
+    return row
+
+
+def _maze_session_row(user_id, status="started", session_id=None):
+    row = GameSession(user_id=user_id, game_type="maze_race", status=status)
+    row.id = session_id or uuid.uuid4()
+    return row
+
+
+def _maze_result_row(session_id, metadata):
+    row = GameResult(
+        session_id=session_id, score=42000, outcome="win", xp_earned=95,
+        result_metadata=metadata,
+    )
+    row.id = uuid.uuid4()
+    return row
+
+
+def _dashboard_script(user, profile, active_rows):
+    return RecordingSession(
+        script=[
+            FakeResult(rowcount=0),  # expire sweep: nothing stale
+            user,  # users.get_by_id
+            FakeResult(rows=[profile]),  # profiles.get_by_user_id
+            FakeResult(rows=[]),  # activities.get (none today)
+            FakeResult(rows=[3]),  # best_win_score (number guessing)
+            FakeResult(rows=[]),  # best color level
+            FakeResult(rows=[]),  # best reflex score
+            FakeResult(rows=[]),  # best perfect error
+            FakeResult(rows=[]),  # best maze time
+            FakeResult(rows=[0]),  # rank count -> rank 1
+            FakeResult(rows=active_rows),  # active states
+        ]
+    )
+
+
+async def test_dashboard_renders_active_maze_session():
+    """Regression: an active Maze Race state crashed `_active_view` (its
+    `guesses` is a dict, not a list) -> unhandled 500 -> the dashboard
+    surfaced "Failed to fetch" for as long as the session stayed active."""
+    user = _user()
+    profile = _profile(user.id, total_xp=150)
+    sid = uuid.uuid4()
+    maze_state = _maze_state(user.id, sid)
+    maze_row = _maze_session_row(user.id, session_id=sid)
+    session = _dashboard_script(user, profile, [(maze_state, maze_row)])
+    svc = MiniappGameService(session)
+
+    dash = await svc.dashboard(user_id=user.id)
+
+    assert len(dash["active_games"]) == 1
+    game = dash["active_games"][0]
+    assert game["game_type"] == "maze_race"
+    assert game["difficulty"] == "medium"
+    assert game["session_id"] == str(sid)
+    assert game["finished"] is False and game["status"] == "started"
+    assert game["maze"]["rows"] == 13 and game["maze"]["cols"] == 13
+    assert game["player"] == {"r": 0, "c": 0}
+    assert game["exit"] == {"r": 12, "c": 12}
+    assert game["valid_directions"] == ["right", "down"]  # all-open grid
+    assert game["moves"] == 0 and game["attempts_used"] == 0
+    assert "secret" not in game
+
+
+async def test_dashboard_renders_other_active_game_types():
+    """The new Maze branch must not disturb the other game-type dispatches."""
+    user = _user()
+    profile = _profile(user.id)
+    guess_sid = uuid.uuid4()
+    color_sid = uuid.uuid4()
+    guess_state = _state(user.id, guess_sid)  # number_guessing, guesses=[]
+    color_state = WebappGameState(
+        user_id=user.id, session_id=color_sid, game_type="color_sequence",
+        difficulty="medium", secret=7, max_attempts=8,
+        guesses={"sequence": [1, 2, 3], "position": 0, "level": 3,
+                 "levels_completed": 2, "log": []},
+    )
+    color_state.id = uuid.uuid4()
+    guess_row = _session_row(user.id)
+    color_row = GameSession(
+        user_id=user.id, game_type="color_sequence", status="started"
+    )
+    color_row.id = color_sid
+    session = _dashboard_script(
+        user, profile, [(guess_state, guess_row), (color_state, color_row)]
+    )
+    svc = MiniappGameService(session)
+
+    dash = await svc.dashboard(user_id=user.id)
+
+    by_type = {g["game_type"]: g for g in dash["active_games"]}
+    assert set(by_type) == {"number_guessing", "color_sequence"}
+    assert by_type["number_guessing"]["attempts_left"] == 7
+    assert by_type["color_sequence"]["level"] == 3
+    assert by_type["color_sequence"]["display"] == [1, 2, 3]
+
+
+async def test_completed_maze_session_returns_replay_view():
+    """Regression: the state row is deleted on completion, so the replay
+    path passed `state=None` into `_maze_public_view` -> AttributeError ->
+    unhandled 500 ("Failed to fetch") when re-opening a finished session."""
+    user = _user()
+    sid = uuid.uuid4()
+    done = _maze_session_row(user.id, status="completed", session_id=sid)
+    metadata = {
+        "game": "maze_race",
+        "difficulty": "hard",
+        "rows": 17, "cols": 17,
+        "elapsed_ms": 42000,
+        "moves": 60,
+        "solution_length": 48,
+        "xp_breakdown": {"base": 100, "time_bonus": 0, "path_bonus": 0,
+                         "total": 95},
+        "log": [],
+    }
+    result = _maze_result_row(sid, metadata)
+    session = RecordingSession(
+        script=[
+            FakeResult(rows=[]),  # state gone (deleted on completion)
+            done,  # sessions.get_by_id
+            FakeResult(rows=[result]),  # results.get_by_session
+        ]
+    )
+    svc = MiniappGameService(session)
+
+    view = await svc.get_state(session_id=sid, user_id=user.id)
+
+    assert view["finished"] is True and view["status"] == "completed"
+    assert view["game_type"] == "maze_race"
+    assert view["difficulty"] == "hard"
+    assert view["session_id"] == str(sid)
+    assert view["maze"]["rows"] == 17 and view["maze"]["cols"] == 17
+    assert view["max_attempts"] == 17 * 17
+    assert view["result"] == {
+        "outcome": "win",
+        "score": 42000,
+        "xp_earned": 95,
+        "elapsed_ms": 42000,
+        "moves": 60,
+        "xp_breakdown": {"base": 100, "time_bonus": 0, "path_bonus": 0,
+                         "total": 95},
+    }
+
+
+async def test_completed_maze_replay_tolerates_sparse_metadata():
+    """Degraded metadata (no difficulty/rows/cols) must still yield a valid
+    finished view instead of KeyError/IndexError."""
+    user = _user()
+    sid = uuid.uuid4()
+    done = _maze_session_row(user.id, status="completed", session_id=sid)
+    result = _maze_result_row(sid, {"game": "maze_race"})
+    session = RecordingSession(
+        script=[
+            FakeResult(rows=[]),  # state gone
+            done,  # sessions.get_by_id
+            FakeResult(rows=[result]),  # results.get_by_session
+        ]
+    )
+    svc = MiniappGameService(session)
+
+    view = await svc.get_state(session_id=sid, user_id=user.id)
+
+    assert view["finished"] is True
+    assert view["difficulty"] == "medium"  # safe default grid
+    assert view["maze"]["rows"] == 13 and view["maze"]["cols"] == 13
+    assert view["result"]["elapsed_ms"] is None
+    assert view["result"]["moves"] is None
+
+
+async def test_get_state_decodes_stored_walls_array():
+    """Regression: `_start_maze` stores walls as the raw bitmask list, but
+    the reader decoded it via `deserialize_maze` (dict-only) -> TypeError
+    -> unhandled 500 when resuming an active maze."""
+    user = _user()
+    sid = uuid.uuid4()
+    state = _maze_state(user.id, sid, moves=3)
+    session = RecordingSession(script=[FakeResult(rows=[state])])
+    svc = MiniappGameService(session)
+
+    view = await svc.get_state(session_id=sid, user_id=user.id)
+
+    assert view["finished"] is False
+    assert view["moves"] == 3 and view["attempts_used"] == 3
+    assert view["maze"]["rows"] == 13 and view["maze"]["cols"] == 13
+    assert view["player"] == {"r": 0, "c": 0}
+
+
+async def test_direction_applies_move_on_stored_walls_array():
+    """Movement on a production-shaped state (walls as int list) works and
+    persists the new position."""
+    user = _user()
+    sid = uuid.uuid4()
+    state = _maze_state(user.id, sid)
+    session = RecordingSession(script=[FakeResult(rows=[state])])
+    svc = MiniappGameService(session)
+
+    view = await svc.direction(
+        session_id=sid, user_id=user.id, direction="right",
+        client_move_id="m1",
+    )
+
+    assert view["player"] == {"r": 0, "c": 1}
+    assert view["moves"] == 1 and view["attempts_used"] == 1
+    assert view["finished"] is False
+    assert session.flushes == 1
+
+
+async def test_missing_maze_state_on_unfinished_session_404s():
+    """No state row + session not completed -> handled 404, unchanged."""
+    user = _user()
+    sid = uuid.uuid4()
+    started = _maze_session_row(user.id, status="started", session_id=sid)
+    session = RecordingSession(script=[FakeResult(rows=[]), started])
+    svc = MiniappGameService(session)
+
+    with pytest.raises(NotFoundError):
+        await svc.get_state(session_id=sid, user_id=user.id)
