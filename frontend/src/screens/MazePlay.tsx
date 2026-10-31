@@ -15,6 +15,26 @@ const CELL_SIZE = 40;
 const MOVE_ANIMATION_MS = 220;
 const INACTIVITY_TIMEOUT_MS = 300_000; // 5 minutes
 
+// Adjacent-cell deltas for optimistic steps (directions come from the
+// server-computed valid_directions list; the server still validates).
+const DIR_DELTAS: Record<string, [number, number]> = {
+  up: [-1, 0],
+  down: [1, 0],
+  left: [0, -1],
+  right: [0, 1],
+};
+
+type AnimState = {
+  r: number;
+  c: number;
+  fromR?: number; // interpolation start (set when an aim begins)
+  fromC?: number;
+  targetR: number;
+  targetC: number;
+  startTime: number;
+  animating: boolean;
+};
+
 type Phase = 'intro' | 'playing' | 'paused' | 'finished';
 
 export function MazePlayScreen({
@@ -42,11 +62,14 @@ export function MazePlayScreen({
 
   // Animation state (kept out of React render loop): interpolated player
   // position for smooth movement between cells.
-  const animRef = useRef({
+  const animRef = useRef<AnimState>({
     r: 0, c: 0, targetR: 0, targetC: 0, startTime: 0, animating: false,
   });
   const rafRef = useRef(0);
   const moveLockRef = useRef(false); // one move at a time
+  const moveSeqRef = useRef(0); // in-flight move generation; stale responses bail out
+  const playerRef = useRef<SVGCircleElement | null>(null); // rAF paint target
+  const cellPxRef = useRef(CELL_SIZE); // latest cell size for rAF painting
   const lastMoveTimeRef = useRef(0);
   const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewRef = useRef<MazeState | null>(null);
@@ -56,6 +79,17 @@ export function MazePlayScreen({
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = 0;
     animRef.current.animating = false;
+  };
+
+  // rAF paint: write the interpolated player position straight onto the SVG
+  // circle so movement is visible without a React render each frame. React
+  // renders derive cx/cy from the same animRef, so the writers converge.
+  const paintPlayer = (r: number, c: number) => {
+    const el = playerRef.current;
+    if (!el) return;
+    const s = cellPxRef.current;
+    el.setAttribute('cx', String(r * s + s / 2));
+    el.setAttribute('cy', String(c * s + s / 2));
   };
 
   const clearInactivity = () => {
@@ -76,6 +110,7 @@ export function MazePlayScreen({
   useEffect(() => {
     return () => {
       stopAnimation();
+      moveSeqRef.current++; // an in-flight move response must not apply after unmount
       clearInactivity();
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('visibilitychange', onVisibility);
@@ -99,6 +134,7 @@ export function MazePlayScreen({
     setError('');
     setPhase('intro');
     stopAnimation();
+    moveSeqRef.current++; // supersede any in-flight move response
     api
       .mazeState(ctx.initData, sessionId)
       .then((state) => {
@@ -131,30 +167,17 @@ export function MazePlayScreen({
       a.c = a.targetC;
       a.animating = false;
       stopAnimation();
-      void syncState();
+      paintPlayer(a.r, a.c); // land on the final cell before the loop exits
     } else {
+      // Advance start -> target for this frame using the aim's from-values.
+      const fromR = a.fromR ?? a.r;
+      const fromC = a.fromC ?? a.c;
+      a.r = fromR + (a.targetR - fromR) * t;
+      a.c = fromC + (a.targetC - fromC) * t;
+      paintPlayer(a.r, a.c);
       rafRef.current = requestAnimationFrame(tick);
     }
   }, []);
-
-  const syncState = async () => {
-    try {
-      const next = await api.mazeState(ctx.initData, sessionId);
-      setView(next);
-      viewRef.current = next;
-      if (next.finished) {
-        setPhase('finished');
-        stopAnimation();
-        clearInactivity();
-        haptic('success');
-      } else {
-        setPhase('playing');
-        setInactivity();
-      }
-    } catch {
-      /* keep last known view on sync failure */
-    }
-  };
 
   const attemptMove = useCallback(
     async (direction: string) => {
@@ -164,28 +187,78 @@ export function MazePlayScreen({
       moveLockRef.current = true;
       setBusy(true);
       setNotice('');
+      const seq = ++moveSeqRef.current; // this move's generation for staleness checks
       try {
+        // Optimistic step (immediate): aim the existing animation at the
+        // adjacent cell and start the rAF loop BEFORE the request. The
+        // direction passed the server-computed valid_directions check, so
+        // the adjacent cell cannot cross a wall; the server still validates
+        // and its response remains authoritative.
+        const [dr, dc] = DIR_DELTAS[direction] ?? [0, 0];
+        const optR = v.player.r + dr;
+        const optC = v.player.c + dc;
+        stopAnimation(); // one rAF loop: a newer aim cancels any prior frame
+        animRef.current = {
+          r: v.player.r, c: v.player.c,
+          fromR: v.player.r, fromC: v.player.c,
+          targetR: optR, targetC: optC,
+          startTime: performance.now(), animating: true,
+        };
+        rafRef.current = requestAnimationFrame(tick);
         const next = await api.mazeMove(
           ctx.initData, sessionId, direction, newClientGuessId(),
         );
+        // Stale-response guard: load/restart/unmount superseded this move's
+        // position, so this older response must not overwrite it.
+        if (seq !== moveSeqRef.current) return;
         setView(next);
         viewRef.current = next;
-        animRef.current = {
-          r: v.player.r, c: v.player.c,
-          targetR: next.player.r, targetC: next.player.c,
-          startTime: performance.now(), animating: true,
-        };
         lastMoveTimeRef.current = performance.now();
         if (next.finished) {
           setPhase('finished');
           stopAnimation();
           clearInactivity();
           haptic('success');
-        } else {
+        } else if (next.player.r !== optR || next.player.c !== optC) {
+          // Reconciliation: the server position differs from the optimistic
+          // one — glide from wherever the circle is to the authoritative cell
+          // using the same interpolation mechanism.
+          const from = animRef.current;
+          stopAnimation();
+          animRef.current = {
+            r: from.r, c: from.c,
+            fromR: from.r, fromC: from.c,
+            targetR: next.player.r, targetC: next.player.c,
+            startTime: performance.now(), animating: true,
+          };
           rafRef.current = requestAnimationFrame(tick);
+          setInactivity();
+        } else {
+          // Confirmed: park the animation exactly on the server position.
+          stopAnimation();
+          animRef.current = {
+            r: next.player.r, c: next.player.c,
+            targetR: next.player.r, targetC: next.player.c,
+            startTime: 0, animating: false,
+          };
+          paintPlayer(next.player.r, next.player.c);
           setInactivity();
         }
       } catch (e) {
+        if (seq === moveSeqRef.current) {
+          // Rollback: glide back to the last server-confirmed cell. The
+          // server never applied the move (or we cannot know that it did),
+          // so view remains the confirmed state and the display must match.
+          const from = animRef.current;
+          stopAnimation();
+          animRef.current = {
+            r: from.r, c: from.c,
+            fromR: from.r, fromC: from.c,
+            targetR: v.player.r, targetC: v.player.c,
+            startTime: performance.now(), animating: true,
+          };
+          rafRef.current = requestAnimationFrame(tick);
+        }
         setNotice(e instanceof Error ? e.message : 'Move failed. Try again.');
         haptic('error');
       } finally {
@@ -266,6 +339,7 @@ export function MazePlayScreen({
 
   const restart = async () => {
     stopAnimation();
+    moveSeqRef.current++; // supersede any in-flight move response
     setPhase('intro');
     setNotice('');
     try {
@@ -307,6 +381,7 @@ export function MazePlayScreen({
 
   const config = view.maze;
   const cellPx = Math.min(CELL_SIZE, Math.floor(Math.min(window.innerWidth, 400) / config.cols));
+  cellPxRef.current = cellPx; // keep the rAF paint target sized (same ref-write pattern as viewRef)
   const mazePx = cellPx * config.cols;
 
   // --- Results screen ---
@@ -460,7 +535,10 @@ export function MazePlayScreen({
   const totalCells = config.rows * config.cols;
   const progressPct = totalCells > 0 ? Math.min(100, ((view.moves + 1) / totalCells) * 100) : 0;
 
-  const animatedPos = animRef.current.animating ? animRef.current : view.player;
+  // While a move is in flight the optimistic (aimed) position stays visible
+  // even after the 220ms animation settles, until the response reconciles it.
+  const animatedPos =
+    animRef.current.animating || moveLockRef.current ? animRef.current : view.player;
 
   return (
     <div className="space-y-2">
@@ -536,6 +614,7 @@ export function MazePlayScreen({
             />
             {/* Player */}
             <circle
+              ref={playerRef}
               cx={animatedPos.c * cellPx + cellPx / 2}
               cy={animatedPos.r * cellPx + cellPx / 2}
               r={cellPx * 0.3}
