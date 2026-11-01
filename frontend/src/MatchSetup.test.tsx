@@ -135,14 +135,15 @@ describe('JoinByCode', () => {
 });
 
 describe('GamesScreen Play With Friends entry', () => {
-  it('opens the dedicated setup flow without touching matches lists', async () => {
+  it('is hidden while SOCIAL_FEATURES_ENABLED is false (restorable)', async () => {
     mockedApi.games.mockResolvedValue({ games: [] });
     const onSetupMatch = vi.fn();
     render(<GamesScreen ctx={ctx} onStart={noop} onSetupMatch={onSetupMatch} />);
     await act(async () => {});
     await act(async () => {});
-    fireEvent.click(screen.getByRole('button', { name: /Play With Friends/ }));
-    expect(onSetupMatch).toHaveBeenCalledOnce();
-    expect(mockedApi.games).toHaveBeenCalledTimes(1);
+    // The social entry points are gated behind the feature flag; the setup
+    // flow itself (MatchSetupScreen above) remains intact and tested.
+    expect(screen.queryByRole('button', { name: /Play With Friends/ })).toBeNull();
+    expect(onSetupMatch).not.toHaveBeenCalled();
   });
 });

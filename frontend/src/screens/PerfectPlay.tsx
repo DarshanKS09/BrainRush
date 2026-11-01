@@ -181,7 +181,9 @@ export function PerfectPlayScreen({
           </div>
           <div className="flex justify-between rounded-xl bg-navy px-3 py-1.5">
             <span className="text-slate-400">You stopped at</span>
-            <b className="text-white">{formatSeconds(r.actual_ms, view.difficulty)}</b>
+            {/* Full-precision stop time, always two decimals (e.g. 9.87 s);
+                rounding is display-only, never applied to scoring. */}
+            <b className="text-white tabular-nums">{formatElapsed(r.actual_ms)}</b>
           </div>
           <div className="flex justify-between rounded-xl bg-navy px-3 py-1.5">
             <span className="text-slate-400">Error</span>

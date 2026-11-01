@@ -11,25 +11,21 @@ Difficulties (all ranges configurable below, never zero/negative):
 
 XP RULE (applied only when an attempt completes; abandoned games award
 nothing). There is NO flat participation award: XP is strictly proportional
-to accuracy, and only a true perfect earns the maximum:
-  actual_q       = round_half_up(actual_ms to DISPLAY_UNIT_MS)
-  error_ms       = abs(actual_q - target_ms)           (integers, exact)
-  error_percent  = error_ms / target_ms * 100
-  accuracy       = max(0, 100 - error_percent)
-  earnedXP       = 100 when error_ms == 0, else int(accuracy) truncated,
-                   clamped to [0, 100]
-Exact match -> 100; 10% error -> 90; 30% -> 70; 50% -> 50; >=100% -> 0.
-A near miss NEVER earns 100: any nonzero error truncates below 100.
+to how close the stop lands on the target, and only an exact stop earns the
+maximum. The backend computes and persists it (client values never trusted):
+  error_ms   = abs(actual_ms - target_ms)          (full precision)
+  earnedXP   = max(0, floor(20 * (1 - error_ms / target_ms)))
+Exact match -> 20; 5% error -> 19; 10% -> 18; 30% -> 14; 50% -> 10;
+>=100% error -> 0. Always an integer in [0, 20]; a near miss NEVER earns 20.
 
-SINGLE PRECISION RULE (hundredths of a second = 10 ms): the stopwatch
-displays hundredths, so scoring quantizes the measured time to hundredths
-first (round half up) and uses the quantized value consistently for the
-error, the accuracy, the perfect test (100% accuracy only when the
-measured time rounds to exactly the target), the persisted score, the
-ranking, and the XP. Sub-hundredth digits are display noise, never skill:
-no broad float tolerance may promote a near miss to perfect. Targets are
-always on coarser-or-equal grids (whole/half/hundredth seconds), hence
-already exact at this precision.
+FULL PRECISION RULE: the stopwatch's measured time is a full-precision
+float from the monotonic clock, and NOTHING is rounded before scoring.
+Error, accuracy, XP, the perfect test (100% accuracy only for an exact
+stop), and the win test all derive from the raw measured time. Rounding
+happens only for display (the client formats seconds on screen). The one
+integer conversion is the persisted leaderboard score, round(error_ms),
+purely because the score column is an integer; smaller is better and
+ranking order is unaffected.
 
 WIN RULE: error within 10% of the target (accuracy >= 90). Wins feed the
 existing wins/losses/streak counters via the standard finish flow.
@@ -59,12 +55,6 @@ from dataclasses import dataclass
 from typing import Any
 
 GAME_TYPE = "perfect_second"
-
-# The game's single documented precision: hundredths of a second. The timer
-# displays hundredths, so every comparison (accuracy, perfect detection,
-# ranking, XP) runs on values quantized to this unit. 10 ms: fine enough to
-# reward real timing skill, coarse enough that display noise can't matter.
-DISPLAY_UNIT_MS = 10
 
 # Abuse bound for a single submitted stop. Genuine attempts finish in
 # seconds; anything beyond ten minutes is junk, never skill.
@@ -147,64 +137,54 @@ def parse_actual_ms(value: Any) -> float:
     return actual
 
 
-def quantize_ms(value_ms: float) -> int:
-    """Round a measured time to the game's display precision (half up).
-
-    The client sends full floating-point precision; a single quantization
-    here (never repeated rounding) maps it onto the hundredth grid before
-    any comparison. Exact halves round up, documented and deterministic.
-    """
-    return int(math.floor(value_ms / DISPLAY_UNIT_MS + 0.5)) * DISPLAY_UNIT_MS
-
-
 def score_result(*, target_ms: int, actual_ms: float) -> dict:
-    """Score one finished attempt at the game's defined precision.
+    """Score one finished attempt at full precision (backend-authoritative).
 
-    The measured time is quantized to hundredths first; everything else
-    (error, accuracy, perfect test, score, XP, win) derives from the
-    quantized integers, so 5.99 s vs a 6.00 s target is a 10 ms miss
-    (99.83%), never a perfect. Only a quantized error of zero is 100%.
+    The measured time is used raw: error, accuracy, XP, and the win test
+    all derive from the full-precision float, so rounding happens only for
+    display and never before scoring. Only an exact stop (error 0.0) is
+    100% accurate / perfect.
     """
     if not isinstance(target_ms, int) or isinstance(target_ms, bool):
         raise ValueError("target_ms must be a positive int")
     if target_ms <= 0:
         raise ValueError("target_ms must be a positive int")
-    actual_q = quantize_ms(float(actual_ms))
-    error_ms = abs(actual_q - target_ms)
+    actual = parse_actual_ms(actual_ms)
+    error_ms = abs(actual - target_ms)
     error_percent = error_ms / target_ms * 100.0
     accuracy_percent = max(0.0, 100.0 - error_percent)
-    xp = xp_for_accuracy(error_ms=error_ms, target_ms=target_ms)
+    xp = xp_for_error(error_ms=error_ms, target_ms=target_ms)
     # Win test in multiplicative form (error * 10 <= target): exact at the
-    # 10% boundary with integers, no float division involved.
+    # 10% boundary without a float division.
     won = error_ms * 10 <= target_ms
     return {
-        "actual_ms": actual_q,
+        "actual_ms": actual,
         "error_ms": error_ms,
         "error_percent": error_percent,
         "accuracy_percent": accuracy_percent,
-        "score_ms": error_ms,
+        # Leaderboard storage only: the score column is an integer, so the
+        # error is rounded here — XP/accuracy above use the raw value.
+        "score_ms": int(round(error_ms)),
         "xp": xp,
         "won": won,
     }
 
 
-def xp_for_accuracy(*, error_ms: int, target_ms: int) -> int:
-    """0..100 XP, exactly proportional to accuracy, truncating.
+def xp_for_error(*, error_ms: float, target_ms: int) -> int:
+    """0..20 XP: ``max(0, floor(20 * (1 - |actual - target| / target)))``.
 
-    XP equals the accuracy percent truncated to an integer: 100 only when
-    the quantized error is zero (a true perfect), every nonzero miss lands
-    strictly below 100, and >=100% error earns 0. Exact integer math —
-    ``(100 * (target - error)) // target`` — so float representation can
-    never flip a boundary (e.g. a true 10% error earns exactly 90).
+    Implemented as the algebraically identical
+    ``floor(20 * (target - error) / target)`` so exact percentages land on
+    exact integers instead of drifting through an intermediate float
+    division (a 5% miss must be exactly 19 XP, never 18). Exact stop ->
+    20; error >= target -> 0.
     """
     if not isinstance(target_ms, int) or isinstance(target_ms, bool):
         raise ValueError("target_ms must be a positive int")
     if target_ms <= 0:
         raise ValueError("target_ms must be a positive int")
-    if not isinstance(error_ms, int) or isinstance(error_ms, bool):
-        raise ValueError("error_ms must be a non-negative int")
-    if error_ms < 0:
-        raise ValueError("error_ms must be a non-negative int")
-    if error_ms >= target_ms:
-        return 0
-    return (100 * (target_ms - error_ms)) // target_ms
+    if isinstance(error_ms, bool) or not isinstance(error_ms, (int, float)):
+        raise ValueError("error_ms must be a non-negative number")
+    if not math.isfinite(error_ms) or error_ms < 0:
+        raise ValueError("error_ms must be a non-negative number")
+    return max(0, math.floor(20 * (target_ms - error_ms) / target_ms))

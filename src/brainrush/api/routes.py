@@ -143,7 +143,7 @@ async def games() -> dict:
         elif entry["id"] == "perfect_second":
             item["xp_rules"] = {
                 did: {
-                    "perfect": 100,
+                    "perfect": 20,
                     "win_accuracy": 90,
                     "win_error_percent": perfect_game.WIN_ERROR_PERCENT,
                     "target_min_ms": cfg.min_target_ms,

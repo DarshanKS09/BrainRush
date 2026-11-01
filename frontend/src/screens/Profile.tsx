@@ -4,6 +4,7 @@ import type { WebAppContext } from '../telegram';
 import { ErrorNotice, Loading, SectionTitle, StatTile, XpBar } from '../components/ui';
 import { FriendPanel } from '../components/FriendPanel';
 import { ReferralPanel } from '../components/ReferralPanel';
+import { SOCIAL_FEATURES_ENABLED } from '../features';
 import { HistoryRow } from './History';
 
 const PROFILE_PREVIEW_COUNT = 5;
@@ -85,7 +86,9 @@ export function ProfileScreen({ ctx, onViewHistory }: { ctx: WebAppContext; onVi
         )}
       </div>
 
-      <FriendPanel ctx={ctx} />
+      {/* Social feature (Add Friends): hidden while SOCIAL_FEATURES_ENABLED
+          is false; the panel component is preserved for easy restoration. */}
+      {SOCIAL_FEATURES_ENABLED && <FriendPanel ctx={ctx} />}
 
       <ReferralPanel ctx={ctx} />
     </div>

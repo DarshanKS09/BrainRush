@@ -9,6 +9,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { api, type GameInfo } from '../api';
+import { SOCIAL_FEATURES_ENABLED } from '../features';
 import { difficultyDisplayName, difficultySub } from '../gameutil';
 import type { WebAppContext } from '../telegram';
 import { GameTile } from '../components/GameTile';
@@ -74,18 +75,21 @@ export function GamesScreen({
 
   return (
     <div className="space-y-3">
-      {/* Exactly one prominent Play With Friends button, separate from the grid. */}
-      <button
-        onClick={() => (onSetupMatch ?? (() => {}))()}
-        className="w-full rounded-3xl bg-gradient-to-r from-amber-500 via-rose-500 to-neon-purple p-4 text-left shadow-glow active:scale-[0.99]"
-      >
-        <span className="flex items-center gap-2 text-lg font-black text-white">
-          <span aria-hidden>👥</span> Play With Friends
-        </span>
-        <span className="mt-0.5 block text-xs font-medium text-white/85">
-          Private room · pick a game & mode · share a code or link
-        </span>
-      </button>
+      {/* Exactly one prominent Play With Friends button, separate from the grid.
+          Hidden while SOCIAL_FEATURES_ENABLED is false (temporary). */}
+      {SOCIAL_FEATURES_ENABLED && (
+        <button
+          onClick={() => (onSetupMatch ?? (() => {}))()}
+          className="w-full rounded-3xl bg-gradient-to-r from-amber-500 via-rose-500 to-neon-purple p-4 text-left shadow-glow active:scale-[0.99]"
+        >
+          <span className="flex items-center gap-2 text-lg font-black text-white">
+            <span aria-hidden>👥</span> Play With Friends
+          </span>
+          <span className="mt-0.5 block text-xs font-medium text-white/85">
+            Private room · pick a game & mode · share a code or link
+          </span>
+        </button>
+      )}
 
       {/* Compact client-side search (no backend requests). */}
       <div className="relative">
@@ -235,7 +239,7 @@ function GameDetailsPanel({
           </>
         )}
 
-        {multiplayerModes.length > 0 && (
+        {SOCIAL_FEATURES_ENABLED && multiplayerModes.length > 0 && (
           <>
             <SectionTitle>Play with friends</SectionTitle>
             <p className="mt-1 text-xs text-slate-400">
