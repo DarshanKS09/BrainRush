@@ -438,13 +438,16 @@ def test_reflex_routes_and_catalog(monkeypatch):
     started = client.post("/api/sessions", headers=headers,
                           json={"game_type": "reflex_rush", "difficulty": "easy"})
     assert started.status_code == 200
+    start_body = started.json()
 
     ok = client.post(f"/api/sessions/{uuid.uuid4()}/finish", headers=headers,
                      json={"rounds": [{"reaction_ms": 200, "false_start": False}] * 5,
                            "client_submission_id": "sub-1"})
     assert ok.status_code == 200
 
-    short = client.post(f"/api/sessions/{uuid.uuid4()}/finish", headers=headers,
+    # Use a valid reflex session id to test finish endpoint validation
+    reflex_session = start_body["session_id"]
+    short = client.post(f"/api/sessions/{reflex_session}/finish", headers=headers,
                         json={"rounds": [{"reaction_ms": 200, "false_start": False}] * 4,
                               "client_submission_id": "sub-1"})
     assert short.status_code == 422

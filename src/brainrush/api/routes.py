@@ -30,6 +30,7 @@ from brainrush.game import maze_race as maze_race
 from brainrush.game import number_guessing as guessing
 from brainrush.game import perfect_second as perfect_game
 from brainrush.game import reflex_rush as reflex_game
+from brainrush.game import chess as chess_game
 
 router = APIRouter(prefix="/api")
 
@@ -55,19 +56,32 @@ class DirectionRequest(BaseModel):
     client_move_id: str = Field(min_length=1, max_length=64)
 
 
-class ReflexRound(BaseModel):
-    reaction_ms: int | None = Field(default=None, ge=1, le=10000)
-    false_start: bool = False
+class ChessMoveRequest(BaseModel):
+    frm: list[int] = Field(..., min_length=2, max_length=2)
+    to: list[int] = Field(..., min_length=2, max_length=2)
+    client_move_id: str = Field(min_length=1, max_length=64)
+    promote_to: str | None = Field(default=None, min_length=1, max_length=1)
+    player_color: int | None = Field(default=None, ge=0, le=1)
 
 
 class ReflexFinishRequest(BaseModel):
-    rounds: list[ReflexRound] = Field(min_length=5, max_length=5)
+    rounds: list[ReflexRoundInput]
     client_submission_id: str = Field(min_length=1, max_length=64)
+
+
+class ReflexRoundInput(BaseModel):
+    reaction_ms: int | None = None
+    false_start: bool = False
 
 
 class PerfectStopRequest(BaseModel):
-    actual_ms: float
+    actual_ms: int
     client_submission_id: str = Field(min_length=1, max_length=64)
+
+
+class MazeDirectionRequest(BaseModel):
+    direction: str = Field(min_length=1, max_length=10)
+    client_move_id: str = Field(min_length=1, max_length=64)
 
 
 IdentityDep = Annotated[dict, Depends(get_verified_identity)]
@@ -178,6 +192,15 @@ async def games() -> dict:
                 }
                 for did, cfg in maze_race.MAZE_DIFFICULTIES.items()
             }
+        elif entry["id"] == "chess":
+            item["xp_rules"] = {
+                did: {
+                    "xp_win": 50,
+                    "xp_draw": 20,
+                    "xp_loss": 10,
+                }
+                for did in chess_game.DIFFICULTIES
+            }
         catalog.append(item)
     return {"games": catalog}
 
@@ -256,6 +279,24 @@ async def direction(
         user_id=identity["user_id"],
         direction=body.direction,
         client_move_id=body.client_move_id,
+    )
+
+
+@router.post("/sessions/{session_id}/chess-move")
+async def chess_move(
+    session_id: uuid.UUID,
+    body: ChessMoveRequest,
+    identity: IdentityDep,
+    session: SessionDep,
+) -> dict:
+    return await _service(session).chess_move(
+        session_id=session_id,
+        user_id=identity["user_id"],
+        frm=body.frm,
+        to=body.to,
+        client_move_id=body.client_move_id,
+        promote_to=body.promote_to,
+        player_color=body.player_color,
     )
 
 

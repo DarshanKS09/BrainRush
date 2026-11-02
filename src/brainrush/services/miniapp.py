@@ -40,6 +40,7 @@ from brainrush.game import color_sequence as colors
 from brainrush.game import perfect_second as perfect
 from brainrush.game import reflex_rush as reflex
 from brainrush.game import maze_race as maze
+from brainrush.game import chess as chess_game
 from brainrush.game import multiplayer as mp
 from brainrush.game.progression import level_for_xp
 from brainrush.services import utcnow
@@ -49,13 +50,14 @@ GAME_TYPE_COLOR_SEQUENCE = "color_sequence"
 GAME_TYPE_REFLEX_RUSH = "reflex_rush"
 GAME_TYPE_PERFECT_SECOND = perfect.GAME_TYPE
 GAME_TYPE_MAZE_RACE = maze.GAME_TYPE
+GAME_TYPE_CHESS = chess_game.GAME_TYPE
 
 # Sessions left `started` longer than this are dead (app closed, failed
 # submit, lobby exit without cancel): genuinely active games finish in
 # minutes, so a day is conservative. Expired rows keep their history.
 STALE_SESSION_TTL = timedelta(hours=24)
 
-PLAYABLE_GAME_TYPES = frozenset({GAME_TYPE_NUMBER_GUESSING, GAME_TYPE_COLOR_SEQUENCE, GAME_TYPE_REFLEX_RUSH, GAME_TYPE_PERFECT_SECOND, GAME_TYPE_MAZE_RACE})
+PLAYABLE_GAME_TYPES = frozenset({GAME_TYPE_NUMBER_GUESSING, GAME_TYPE_COLOR_SEQUENCE, GAME_TYPE_REFLEX_RUSH, GAME_TYPE_PERFECT_SECOND, GAME_TYPE_MAZE_RACE, GAME_TYPE_CHESS})
 
 DIFFICULTIES: dict[str, guessing.NumberGuessingConfig] = {
     "easy": guessing.NumberGuessingConfig(max_attempts=15),
@@ -153,6 +155,15 @@ CATALOG = [
         ],
     },
     {
+        "id": "chess",
+        "title": "Chess",
+        "description": "Classic chess against an AI opponent. Choose your color and difficulty level.",
+        "playable": True,
+        "difficulties": [
+            {"id": did} for did in chess_game.DIFFICULTIES
+        ],
+    },
+    {
         "id": "memory_match",
         "title": "Memory Match",
         "description": "Flip cards and match every pair.",
@@ -234,6 +245,31 @@ def _color_public_view(state, data: dict) -> dict:
         "status": "started",
         "finished": False,
         "result": None,
+    }
+
+
+def _chess_public_view(state, data: dict) -> dict:
+    """Public Chess state: board is sent to client for rendering.
+    
+    The full board state is visible to the client by design (like Maze Race).
+    """
+    return {
+        "session_id": str(state.session_id),
+        "game_type": GAME_TYPE_CHESS,
+        "difficulty": state.difficulty,
+        "playerColor": "white" if data.get("player_color", 0) == 0 else "black",
+        "board": data.get("board", []),
+        "turn": data.get("turn", 0),
+        "player_to_move": data.get("turn", 0) == data.get("player_color", 0),
+        "move_history": data.get("move_history", []),
+        "halfmove_clock": data.get("halfmove_clock", 0),
+        "fullmove_number": data.get("fullmove_number", 1),
+        "promotion_pending": data.get("promotion_pending"),
+        "game_over": data.get("game_over", False),
+        "result": data.get("result"),
+        "status": "completed" if data.get("game_over") else "started",
+        "finished": data.get("game_over", False),
+        "result_public": data.get("result", {}).get("outcome") if data.get("result") else None,
     }
 
 
@@ -436,6 +472,11 @@ class MiniappGameService:
                 raise ValueError(
                     f"difficulty must be one of {sorted(MAZE_DIFFICULTIES)}"
                 )
+        elif game_type == GAME_TYPE_CHESS:
+            if difficulty not in chess_game.DIFFICULTIES:
+                raise ValueError(
+                    f"difficulty must be one of {sorted(chess_game.DIFFICULTIES)}"
+                )
         else:
             _config_for(difficulty)  # fail fast, before any DB work
         async with self.session.begin():
@@ -470,6 +511,10 @@ class MiniappGameService:
             if game_type == GAME_TYPE_MAZE_RACE:
                 return await self._start_maze(
                     user_id=user_id, db_row=db_row, difficulty=difficulty,
+                )
+            if game_type == GAME_TYPE_CHESS:
+                return await self._start_chess(
+                    user_id=user_id, db_row=db_row, difficulty=difficulty
                 )
             config = _config_for(difficulty)
             secret = guessing.roll_secret(config)
@@ -834,6 +879,42 @@ class MiniappGameService:
         await self.states.delete(state)
         return _completed_view(session_row, result_row, [])
 
+    async def _start_chess(self, *, user_id, db_row, difficulty: str) -> dict:
+        """Start a Chess game. The game state (board, turn, etc.) is stored
+        in `guesses` JSONB column. Player color is chosen by the frontend
+        and passed via the move endpoint."""
+        if difficulty not in chess_game.DIFFICULTIES:
+            raise ValueError(
+                f"difficulty must be one of {sorted(chess_game.DIFFICULTIES)}"
+            )
+        # Chess stores its full state in the guesses column as JSON
+        initial_state = {
+            "game": GAME_TYPE_CHESS,
+            "difficulty": difficulty,
+            "player_color": 0,  # default white, will be set by move endpoint
+            "board": chess_game._new_board(),
+            "turn": 0,  # white moves first
+            "ep": None,
+            "castling": list(chess_game._starting_castling()),
+            "move_history": [],
+            "halfmove_clock": 0,
+            "fullmove_number": 1,
+            "promotion_pending": None,
+            "game_over": False,
+            "result": None,
+        }
+        state = await self.states.create(
+            user_id=user_id,
+            session_id=db_row.id,
+            game_type=GAME_TYPE_CHESS,
+            difficulty=difficulty,
+            secret=0,  # unused for chess
+            max_attempts=1,  # unused for chess
+        )
+        state.guesses = initial_state
+        await self.session.flush()
+        return self._chess_public_view(state, initial_state)
+
     async def _start_reflex(self, *, user_id, db_row, difficulty: str) -> dict:
         try:
             config = reflex.REFLEX_DIFFICULTIES[difficulty]
@@ -1095,6 +1176,295 @@ class MiniappGameService:
             await self.session.flush()
             return _color_public_view(state, data)
 
+    async def chess_move(
+        self,
+        *,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID,
+        frm: list[int],
+        to: list[int],
+        client_move_id: str,
+        promote_to: str | None = None,
+        player_color: int | None = None,
+    ) -> dict:
+        """Submit a chess move. Handles player color selection, move validation,
+        promotion, and AI response."""
+        if not isinstance(client_move_id, str) or not client_move_id.strip():
+            raise ValueError("client_move_id must be a non-empty string")
+        if not isinstance(frm, list) or len(frm) != 2:
+            raise ValueError("frm must be [row, col]")
+        if not isinstance(to, list) or len(to) != 2:
+            raise ValueError("to must be [row, col]")
+        async with self.session.begin():
+            state = await self.states.get_for_update(session_id=session_id)
+            if state is None or state.user_id != user_id:
+                return await self._replay_or_missing(session_id, user_id)
+            if state.game_type != GAME_TYPE_CHESS:
+                raise ValueError("this game uses the chess_move endpoint")
+            data = dict(state.guesses or {})
+            if data.get("game") != GAME_TYPE_CHESS:
+                raise ValueError("stored chess state is invalid")
+            
+            # Determine player color: explicit from request, or infer from first move
+            if player_color is not None:
+                data["player_color"] = player_color
+            elif data.get("player_color") is None:
+                # First move: player color is inferred from who moves first
+                # If white moves first, player is white; if black moves first,
+                # player is black.
+                turn = data.get("turn", 0)
+                if turn == 0:
+                    # White moves first - if player moves now, they are white
+                    data["player_color"] = 0
+                else:
+                    # Black moves first - if player moves now, they are black
+                    data["player_color"] = 1
+            
+            player_col = data.get("player_color", 0)
+            turn = data.get("turn", 0)
+            
+            # If the player moves when it's not their turn after color is set,
+            # that's an error (unless color was just set by this move)
+            if turn != player_col and data.get("player_color") != (0 if turn == 0 else 1):
+                return _chess_public_view(state, data)
+            
+            # Build move dict
+            move = {
+                "frm": frm,
+                "to": to,
+                "promote_to": promote_to,
+                "castling": data.get("promotion_pending", {}).get("castling") if data.get("promotion_pending") else None,
+                "ep_capture": False,  # will be determined by chess module
+            }
+            
+            # Handle promotion pending
+            if data.get("promotion_pending"):
+                if promote_to is None:
+                    return _chess_public_view(state, data)
+                move["promote_to"] = promote_to
+                pending = data["promotion_pending"]
+                if (frm == pending["frm"] and to == pending["to"]):
+                    move["castling"] = pending.get("castling")
+                else:
+                    raise ValueError("invalid promotion move")
+                data["promotion_pending"] = None
+            
+            # Validate and apply move
+            board = data.get("board", [])
+            ep = tuple(data["ep"]) if data.get("ep") else None
+            castling = set(data.get("castling", []))
+            difficulty = data.get("difficulty", "medium")
+            
+            # Get legal moves for current position
+            wc = {"K", "Q"} if turn == 0 else set()
+            bc = {"k", "q"} if turn == 1 else set()
+            legal_moves = chess_game._legal_moves_for(board, ep, wc, bc, turn)
+            
+            # Check if move is legal
+            move_valid = False
+            for lm in legal_moves:
+                if (lm["frm"] == move["frm"] and lm["to"] == move["to"] and
+                    (lm.get("promote_to") or "") == (move.get("promote_to") or "") and
+                    (lm.get("castling") or []) == (move.get("castling") or [])):
+                    move_valid = True
+                    move["ep_capture"] = lm.get("ep_capture", False)
+                    if move.get("promote_to") is None and lm.get("promote_to"):
+                        move["promote_to"] = lm["promote_to"]
+                    break
+            
+            if not move_valid:
+                raise ValueError("illegal move")
+            
+            # Check for pawn promotion without promotion choice
+            frm_r, frm_c = move["frm"]
+            to_r, to_c = move["to"]
+            piece = board[frm_r * 8 + frm_c]
+            if (chess_game._ptype_of(piece) == "P" and 
+                    chess_game._promotion_rank(to_r, turn) is not None and
+                    move.get("promote_to") is None):
+                # Need promotion choice
+                data["promotion_pending"] = move
+                state.guesses = data
+                await self.session.flush()
+                return _chess_public_view(state, data)
+            
+            # Apply the move
+            notation = chess_game._move_to_notation(move, board)
+            new_board, new_ep, new_castling = chess_game._apply_move(
+                board, ep, castling, move, turn
+            )
+            
+            # Update state
+            data["board"] = new_board
+            data["ep"] = list(new_ep) if new_ep else None
+            data["castling"] = list(new_castling)
+            data["move_history"].append({
+                "move": move,
+                "notation": notation,
+                "color": turn,
+            })
+            
+            # Update clocks
+            if (chess_game._ptype_of(piece) == "P" or 
+                    move.get("ep_capture") or 
+                    (new_board[to_r * 8 + to_c] != ".")):
+                data["halfmove_clock"] = 0
+            else:
+                data["halfmove_clock"] += 1
+            
+            if turn == 1:
+                data["fullmove_number"] += 1
+            
+            # Switch turn
+            data["turn"] = 1 - turn
+            
+            # Check game state
+            wc_after = {"K", "Q"} if data["turn"] == 0 else set()
+            bc_after = {"k", "q"} if data["turn"] == 1 else set()
+            game_state = chess_game._check_game_state_if(
+                new_board, new_ep, new_castling, data["turn"], data["halfmove_clock"]
+            )
+            
+            if game_state:
+                data["game_over"] = True
+                data["result"] = {
+                    "outcome": outcome,
+                    "xp_earned": xp_earned,
+                    "moveHistory": [m["notation"] for m in data["move_history"]],
+                    "winner": winner,
+                }
+                state.guesses = data
+                await self.session.flush()
+                # Complete the game
+                return await self._complete_chess(state, data, game_state)
+            
+            # AI's turn - compute AI move
+            if data["turn"] != player_col:
+                ai_legal = chess_game._legal_moves_for(
+                    new_board, new_ep, wc_after if data["turn"] == 0 else bc_after, data["turn"]
+                )
+                ai_move = chess_game._choose_ai_move(
+                    new_board, new_ep, new_castling, data["turn"], ai_legal,
+                    chess_game.CHESS_DIFFICULTIES[difficulty]
+                )
+                if ai_move:
+                    ai_board, ai_ep, ai_castling = chess_game._apply_move(
+                        new_board, new_ep, new_castling, ai_move, data["turn"]
+                    )
+                    ai_notation = chess_game._move_to_notation(ai_move, new_board)
+                    
+                    data["board"] = ai_board
+                    data["ep"] = list(ai_ep) if ai_ep else None
+                    data["castling"] = list(ai_castling)
+                    data["move_history"].append({
+                        "move": ai_move,
+                        "notation": ai_notation,
+                        "color": data["turn"],
+                    })
+                    
+                    # Update clocks after AI move
+                    ai_piece = new_board[ai_move["frm"][0] * 8 + ai_move["frm"][1]]
+                    if (chess_game._ptype_of(ai_piece) == "P" or 
+                            ai_board[ai_move["to"][0] * 8 + ai_move["to"][1]] != "."):
+                        data["halfmove_clock"] = 0
+                    else:
+                        data["halfmove_clock"] += 1
+                    
+                    if data["turn"] == 1:
+                        data["fullmove_number"] += 1
+                    
+                    # Switch turn after AI move
+                    data["turn"] = 1 - data["turn"]
+                    
+                    # Check for game over after AI move
+                    wc_after2 = {"K", "Q"} if data["turn"] == 0 else set()
+                    bc_after2 = {"k", "q"} if data["turn"] == 1 else set()
+                    ai_game_over = chess_game._check_game_state_if(
+                        ai_board, ai_ep, ai_castling, data["turn"], data["halfmove_clock"]
+                    )
+                    if ai_game_over:
+                        winner_color = ai_game_over.get("winner")
+                        if winner_color is not None:
+                            outcome = "win" if winner_color == player_col else "loss"
+                            winner = "player" if winner_color == player_col else "ai"
+                        else:
+                            outcome = "draw"
+                            winner = None
+                        xp_earned = chess_game._xp_for_result(outcome, difficulty)
+                        data["game_over"] = True
+                        data["result"] = {
+                            "outcome": outcome,
+                            "xp_earned": xp_earned,
+                            "moveHistory": [m["notation"] for m in data["move_history"]],
+                            "winner": winner,
+                        }
+                        state.guesses = data
+                        await self.session.flush()
+                        return await self._complete_chess(state, data, ai_game_over)
+            
+            state.guesses = data
+            await self.session.flush()
+            return self._chess_public_view(state, data)
+    
+    async def _complete_chess(self, state, data: dict, game_result: dict) -> dict:
+        """Complete a chess game and record results."""
+        from brainrush.services import utcnow as _utcnow
+        
+        moment = _utcnow()
+        player_color = data.get("player_color", 0)
+        winner = game_result.get("winner")
+        difficulty = data.get("difficulty", "medium")
+        
+        # Determine outcome
+        if winner is None:
+            outcome = "draw"
+        else:
+            outcome = "win" if winner == player_color else "loss"
+        
+        # XP calculation based on difficulty and outcome
+        xp_earned = chess_game._xp_for_result(outcome, difficulty)
+        
+        metadata = {
+            "game": GAME_TYPE_CHESS,
+            "difficulty": difficulty,
+            "player_color": player_color,
+            "winner": winner,
+            "status": game_result.get("status"),
+            "reason": game_result.get("reason"),
+            "move_history": data.get("move_history", []),
+            "fullmove_number": data.get("fullmove_number", 1),
+            "halfmove_clock": data.get("halfmove_clock", 0),
+        }
+        
+        session_row = await self.sessions.finish(
+            session_id=state.session_id,
+            status="completed",
+            score=data.get("fullmove_number", 1),
+            ended_at=moment,
+            duration_seconds=None,
+        )
+        result_row = await self.results.record(
+            session_id=state.session_id,
+            score=data.get("fullmove_number", 1),
+            outcome=outcome,
+            xp_earned=xp_earned,
+            metadata=metadata,
+        )
+        profile = await self.profiles.record_game(
+            user_id=state.user_id,
+            xp_earned=xp_earned,
+            won=(outcome == "win"),
+            new_level=None,
+        )
+        await self.profiles.set_level(
+            user_id=state.user_id, level=level_for_xp(profile.total_xp)
+        )
+        await self.activities.add_play(
+            user_id=state.user_id, day=moment.date(), xp_earned=xp_earned
+        )
+        await self.states.delete(state)
+        return self._chess_public_view(state, data)
+    
     async def _complete_color(
         self, state, data, entry, *, completed_levels: int, won: bool, config,
     ):

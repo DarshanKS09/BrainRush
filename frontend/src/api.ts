@@ -24,7 +24,7 @@ export interface DashboardData {
   active_games: ActiveGame[];
 }
 
-export type ActiveGame = GameState | ColorState | ReflexState | PerfectState | MazeState;
+export type ActiveGame = GameState | ColorState | ReflexState | PerfectState | MazeState | ChessState;
 
 export interface DifficultyInfo {
   id: string;
@@ -90,6 +90,80 @@ export interface GameState {
   status: string;
   finished: boolean;
   result: GameResult | null;
+}
+
+// --- Chess ---
+
+export type ChessResultOutcome = 'win' | 'loss' | 'draw';
+
+export interface ChessPiece {
+  color: 'white' | 'black';
+  type: 'king' | 'queen' | 'rook' | 'bishop' | 'knight' | 'pawn';
+}
+
+export interface ChessSquare {
+  color: 'light' | 'dark';
+  occupant: ChessPiece | null;
+  rank: number;
+  file: number;
+}
+
+export interface ChessMove {
+  from: string;
+  to: string;
+  promotion?: 'knight' | 'bishop' | 'rook' | 'queen';
+  san: string;
+}
+
+export interface ChessTurn {
+  move_number: number;
+  color: 'white' | 'black';
+  moves: { move: ChessMove; san: string }[];
+}
+
+export interface ChessPosition {
+  fen: string;
+  board: ChessSquare[][];
+  turn: 'white' | 'black';
+  castling: { whiteKingSide: boolean; whiteQueenSide: boolean; blackKingSide: boolean; blackQueenSide: boolean };
+  enPassant: string | null;
+  halfMoves: number;
+  fullMoves: number;
+  legalMoves: string[];
+  selectedSquare: string | null;
+  highlightedSquares: string[];
+  check: boolean;
+  checkmate: boolean;
+  stalemate: boolean;
+  insufficientMaterial: boolean;
+  moveHistory: string[];
+}
+
+export interface ChessResult {
+  outcome: ChessResultOutcome;
+  xp_earned: number;
+  moveHistory: string[];
+  winner: 'player' | 'ai' | null;
+}
+
+export interface ChessState {
+  session_id: string;
+  game_type: string;
+  difficulty: string;
+  playerColor: 'white' | 'black';
+  board: string[];
+  turn: number;
+  player_to_move: boolean;
+  move_history: { move: { frm: number[]; to: number[]; promote_to?: string | null }; notation: string; color: number }[];
+  halfmove_clock: number;
+  fullmove_number: number;
+  promotion_pending: { frm: number[]; to: number[]; castling?: number[] | null } | null;
+  game_over: boolean;
+  result: ChessResult | null;
+  status: string;
+  finished: boolean;
+  result_public: ChessResultOutcome | null;
+  position: ChessPosition;
 }
 
 export interface ColorMove {
@@ -422,6 +496,8 @@ export const api = {
     request<GameState>(`/api/sessions/${sessionId}`, initData),
   colorState: (initData: string, sessionId: string) =>
     request<ColorState>(`/api/sessions/${sessionId}`, initData),
+  chessState: (initData: string, sessionId: string) =>
+    request<ChessState>(`/api/sessions/${sessionId}`, initData),
   guess: (initData: string, sessionId: string, value: number, clientGuessId: string) =>
     request<GameState>(`/api/sessions/${sessionId}/guess`, initData, {
       method: 'POST',
@@ -431,6 +507,19 @@ export const api = {
     request<ColorState>(`/api/sessions/${sessionId}/move`, initData, {
       method: 'POST',
       body: JSON.stringify({ color, client_move_id: clientMoveId }),
+    }),
+  chessMove: (initData: string, sessionId: string, from: string, to: string, promotion: 'knight' | 'bishop' | 'rook' | 'queen' | null, clientMoveId: string) =>
+    request<ChessState>(`/api/sessions/${sessionId}/chess-move`, initData, {
+      method: 'POST',
+      body: JSON.stringify({ from, to, promotion, client_move_id: clientMoveId }),
+    }),
+  chessUndo: (initData: string, sessionId: string) =>
+    request<{ ok: boolean; detail?: string }>(`/api/sessions/${sessionId}/chess-undo`, initData, {
+      method: 'POST',
+    }),
+  chessRestart: (initData: string, sessionId: string) =>
+    request<ChessState>(`/api/sessions/${sessionId}/chess-restart`, initData, {
+      method: 'POST',
     }),
   finishReflex: (initData: string, sessionId: string, rounds: ReflexRoundInput[], clientSubmissionId: string) =>
     request<ReflexState>(`/api/sessions/${sessionId}/finish`, initData, {

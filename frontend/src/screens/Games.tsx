@@ -205,8 +205,7 @@ function GameDetailsPanel({
       }}
     >
       <div className="w-full max-w-md rounded-3xl bg-panel p-6 shadow-card animate-pop">
-        <div className="flex items-center justify-between mb-1">
-          <div className="flex h-[64px] w-[64px] items-center justify-center rounded-2xl bg-gradient-to-r from-neon-purple to-neon-cyan text-white shadow-glow">
+        <div className="flex items-center justify-between mb-1">            <div className="flex h-[64px] w-[64px] items-center justify-center rounded-2xl bg-gradient-to-r from-neon-purple to-neon-cyan text-white shadow-glow">
             <span className="text-3xl" aria-hidden>
               {({
                 number_guessing: '🔢',
@@ -214,6 +213,7 @@ function GameDetailsPanel({
                 reflex_rush: '⚡',
                 perfect_second: '⏱️',
                 maze_race: '🌀',
+                chess: '♟️',
                 memory_match: '🃏',
                 reaction_test: '🎯',
                 math_challenge: '➗',
