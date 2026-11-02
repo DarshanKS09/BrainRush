@@ -71,6 +71,7 @@ export function MazePlayScreen({
   const playerRef = useRef<SVGCircleElement | null>(null); // rAF paint target
   const cellPxRef = useRef(CELL_SIZE); // latest cell size for rAF painting
   const lastMoveTimeRef = useRef(0);
+  const trailRef = useRef<TrailState | null>(null); // visible path through previously travelled cells
   const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewRef = useRef<MazeState | null>(null);
   viewRef.current = view;
@@ -81,6 +82,48 @@ export function MazePlayScreen({
     animRef.current.animating = false;
   };
 
+  // Trail state: cells list stores [r, c] pairs representing the path segments.
+  // When moving forward, we add a new segment from the previous position.
+  // When backtracking into the immediately previous cell, we remove that segment.
+  // Otherwise we replace the current endpoint with the new direction.
+  type TrailState = {
+    cells: [number, number][];
+    prevR: number;
+    prevC: number;
+  };
+
+  const updateTrail = (trail: TrailState | null, newR: number, newC: number): TrailState => {
+    const { cells, prevR, prevC } = trail ?? { cells: [], prevR: -1, prevC: -1 };
+    // If the new position is the same as the immediately previous cell (backtracking),
+    // remove the last segment from the trail.
+    if (cells.length > 0 && prevR === newR && prevC === newC) {
+      const newCells = cells.slice(0, -1);
+      // The new 'previous' becomes the cell before the removed one, or the start.
+      const newPrev = newCells.length > 0 ? newCells[newCells.length - 1] : [newR, newC];
+      return { cells: newCells, prevR: newPrev[0], prevC: newPrev[1] };
+    }
+    // If the player moves to a cell that's already in the middle of the trail
+    // (taking a different route), remove all segments after that point.
+    const existingIndex = cells.findIndex(
+      ([r, c]) => r === newR && c === newC
+    );
+    if (existingIndex >= 0 && existingIndex < cells.length - 1) {
+      // Truncate the trail at the branching point and add the new endpoint.
+      const newCells = cells.slice(0, existingIndex + 1);
+      return {
+        cells: [...newCells, [newR, newC]],
+        prevR: newR,
+        prevC: newC,
+      };
+    }
+    // Normal case: add the new cell as a new segment.
+    return {
+      cells: [...cells, [newR, newC]],
+      prevR: newR,
+      prevC: newC,
+    };
+  };
+
   // rAF paint: write the interpolated player position straight onto the SVG
   // circle so movement is visible without a React render each frame. React
   // renders derive cx/cy from the same animRef, so the writers converge.
@@ -88,8 +131,8 @@ export function MazePlayScreen({
     const el = playerRef.current;
     if (!el) return;
     const s = cellPxRef.current;
-    el.setAttribute('cx', String(r * s + s / 2));
-    el.setAttribute('cy', String(c * s + s / 2));
+    el.setAttribute('cx', String(c * s + s / 2));
+    el.setAttribute('cy', String(r * s + s / 2));
   };
 
   const clearInactivity = () => {
@@ -144,6 +187,12 @@ export function MazePlayScreen({
           r: state.player.r, c: state.player.c,
           targetR: state.player.r, targetC: state.player.c,
           startTime: 0, animating: false,
+        };
+        // Initialize trail: last cell is where the player started (0,0)
+        trailRef.current = {
+          cells: [[state.player.r, state.player.c]],
+          prevR: state.player.r,
+          prevC: state.player.c,
         };
         if (state.finished) setPhase('finished');
         else if (state.moves > 0) setPhase('playing');
@@ -214,6 +263,9 @@ export function MazePlayScreen({
         setView(next);
         viewRef.current = next;
         lastMoveTimeRef.current = performance.now();
+        // Update trail: add the new cell as a segment from the previous position
+        const newTrail = updateTrail(trailRef.current, next.player.r, next.player.c);
+        trailRef.current = newTrail;
         if (next.finished) {
           setPhase('finished');
           stopAnimation();
@@ -623,6 +675,34 @@ export function MazePlayScreen({
               strokeWidth={2}
               className="drop-shadow-[0_0_8px_rgba(34,211,238,0.8)]"
             />
+            {/* Trail path: lines connecting traversed cells */}
+            {trailRef.current && (
+              <g stroke="#fbbf24" strokeWidth={Math.max(1, cellPx / 20)} strokeLinecap="round" fill="none" opacity={0.6}>
+                {trailRef.current?.cells && trailRef.current.cells.map(([r, c], i) => {
+                  if (i === 0) return null;
+                  const [prevR, prevC] = trailRef.current!.cells[i - 1] || [0, 0];
+                  const x0 = prevC * cellPx + cellPx / 2;
+                  const y0 = prevR * cellPx + cellPx / 2;
+                  const x1 = c * cellPx + cellPx / 2;
+                  const y1 = r * cellPx + cellPx / 2;
+                  if (x0 === x1 && y0 === y1) return null;
+                  return <line key={i} x1={x0} y1={y0} x2={x1} y2={y1} d={`M${x0},${y0}L${x1},${y1}`} />;
+                })}
+              </g>
+            )}
+            {/* Segment highlight: last position dot */}
+            {trailRef.current && trailRef.current.cells.length > 0 && (
+              <g stroke="#f87171" strokeWidth={Math.max(1, cellPx / 15)} strokeLinecap="round" fill="none" opacity={0.8}>
+                {trailRef.current!.cells.map(([r, c], i) => {
+                  const x = c * cellPx + cellPx / 2;
+                  const y = r * cellPx + cellPx / 2;
+                  if (i === trailRef.current!.cells.length - 1) {
+                    <circle cx={x} cy={y} r={cellPx * 0.15} fill="#f87171" opacity={0.4} />;
+                  }
+                  return null;
+                })}
+              </g>
+            )}
           </svg>
         </div>
         {notice && (
