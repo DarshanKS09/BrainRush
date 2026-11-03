@@ -30,15 +30,16 @@ export function ChessPlayScreen({
   ctx,
   sessionId,
   onExit,
+  onBackToMatch,
 }: {
   ctx: WebAppContext;
   sessionId: string;
   onExit: () => void;
+  onBackToMatch?: () => void;
 }) {
   const [state, setState] = useState<ChessState | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState('');
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [promotionPending, setPromotionPending] = useState<{ from: string; to: string; move: ChessMove } | null>(null);
   const [showPromotionChooser, setShowPromotionChooser] = useState(false);
@@ -199,7 +200,6 @@ export function ChessPlayScreen({
         haptic('light');
       }
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : 'Move failed. Try again.');
       haptic('error');
     } finally {
       setBusy(false);
@@ -230,7 +230,6 @@ export function ChessPlayScreen({
       await api.chessUndo(ctx.initData, sessionId);
       load();
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : 'Undo failed. Try again.');
       haptic('error');
     } finally {
       setBusy(false);
@@ -250,7 +249,6 @@ export function ChessPlayScreen({
       setShowPromotionChooser(false);
       haptic('light');
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : 'Restart failed.');
       haptic('error');
     } finally {
       setBusy(false);
@@ -264,7 +262,8 @@ export function ChessPlayScreen({
       /* already gone: still exit */
     }
     onExit();
-  }, [ctx.initData, sessionId, onExit]);
+    onBackToMatch?.();
+  }, [ctx.initData, sessionId, onExit, onBackToMatch]);
 
   if (error && !state) return <ErrorNotice message={error} onRetry={load} />;
   if (!state) return <Loading label="Loading chess…" />;
@@ -497,7 +496,3 @@ const BLACK_PIECES: Record<string, string> = {
   pawn: '♟',
 };
 
-// Small polyhedral dice helpers used by the legacy number-guessing minigame.
-function rollSingleD6(): 1 | 2 | 3 | 4 | 5 | 6 {
-  return ((Math.random() * 6) | 0) + 1;
-}

@@ -373,7 +373,6 @@ export default function App() {
             sessionId={route.sessionId}
             onBackToMatch={() => setRoute({ name: 'match', matchId: route.matchId })}
             onExit={() => setRoute({ name: 'match', matchId: route.matchId })}
-            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'chess', sessionId })}
           />
         )}
         {route.name === 'play' && route.gameId === 'color_sequence' && (
@@ -425,7 +424,6 @@ export default function App() {
             ctx={ctx}
             sessionId={route.sessionId}
             onExit={() => setRoute({ name: 'games' })}
-            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'chess', sessionId })}
           />
         )}
         {route.name === 'leaderboard' && <LeaderboardScreen ctx={ctx} />}
