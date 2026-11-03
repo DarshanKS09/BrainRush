@@ -508,11 +508,24 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ color, client_move_id: clientMoveId }),
     }),
-  chessMove: (initData: string, sessionId: string, from: string, to: string, promotion: 'knight' | 'bishop' | 'rook' | 'queen' | null, clientMoveId: string) =>
-    request<ChessState>(`/api/sessions/${sessionId}/chess-move`, initData, {
+  chessMove: (initData: string, sessionId: string, from: string, to: string, promotion: 'knight' | 'bishop' | 'rook' | 'queen' | null, clientMoveId: string) => {
+    const squareToCoords = (sq: string): [number, number] | null => {
+      if (typeof sq !== 'string' || sq.length !== 2) return null;
+      const file = sq[0];
+      const rank = sq[1];
+      if (file < 'a' || file > 'h' || rank < '1' || rank > '8') return null;
+      const r = 8 - parseInt(rank, 10);
+      const c = file.charCodeAt(0) - 'a'.charCodeAt(0);
+      return [r, c];
+    };
+    const frm = squareToCoords(from);
+    const tto = squareToCoords(to);
+    const promote_to = promotion ? promotion[0].toUpperCase() : null;
+    return request<ChessState>(`/api/sessions/${sessionId}/chess-move`, initData, {
       method: 'POST',
-      body: JSON.stringify({ from, to, promotion, client_move_id: clientMoveId }),
-    }),
+      body: JSON.stringify({ frm, to: tto, promote_to, client_move_id: clientMoveId }),
+    });
+  },
   chessUndo: (initData: string, sessionId: string) =>
     request<{ ok: boolean; detail?: string }>(`/api/sessions/${sessionId}/chess-undo`, initData, {
       method: 'POST',

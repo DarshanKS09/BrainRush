@@ -354,6 +354,9 @@ def _active_view(state, service) -> dict:
             data["visited"], data.get("moves", 0),
             data.get("started_at"),
         )
+    if state.game_type == GAME_TYPE_CHESS:
+        data = dict(state.guesses or {})
+        return service._chess_public_view(state, data)
     return _public_view(state, list(state.guesses or []))
 
 
@@ -1527,11 +1530,13 @@ class MiniappGameService:
                 g for g in meta.get("guesses", [])
                 if isinstance(g, dict) and "value" in g
             ]
+            return _completed_view(session_row, result_row, stored)
         elif meta.get("game") == GAME_TYPE_REFLEX_RUSH:
             stored = [
                 g for g in meta.get("rounds", [])
                 if isinstance(g, dict)
             ]
+            return _completed_view(session_row, result_row, stored)
         elif meta.get("game") == GAME_TYPE_MAZE_RACE:
             # The state row is deleted on completion, so hand the view
             # builder a stand-in carrying only what it reads off the state:
@@ -1569,12 +1574,37 @@ class MiniappGameService:
                     "xp_breakdown": meta.get("xp_breakdown"),
                 },
             )
+        elif meta.get("game") == GAME_TYPE_CHESS:
+            # Rebuild a minimal chess state view for completed games
+            state_ns = SimpleNamespace(
+                session_id=session_row.id,
+                game_type=GAME_TYPE_CHESS,
+                difficulty=meta.get("difficulty", "medium"),
+            )
+            data = {
+                "game": GAME_TYPE_CHESS,
+                "difficulty": meta.get("difficulty", "medium"),
+                "player_color": meta.get("player_color", 0),
+                "board": meta.get("board", chess_game._new_board()),
+                "turn": meta.get("turn", 0),
+                "move_history": meta.get("move_history", []),
+                "halfmove_clock": meta.get("halfmove_clock", 0),
+                "fullmove_number": meta.get("fullmove_number", 1),
+                "game_over": True,
+                "result": {
+                    "outcome": result_row.outcome,
+                    "xp_earned": result_row.xp_earned,
+                    "moveHistory": meta.get("move_history", []),
+                    "winner": meta.get("winner"),
+                },
+            }
+            return self._chess_public_view(state_ns, data)
         else:
             stored = [
                 {"id": f"past-{i}", "value": v}
                 for i, v in enumerate(meta.get("guesses", []))
             ]
-        return _completed_view(session_row, result_row, stored)
+            return _completed_view(session_row, result_row, stored)
 
     async def get_state(self, *, session_id: uuid.UUID, user_id: uuid.UUID) -> dict:
         async with self.session.begin():
@@ -1596,6 +1626,9 @@ class MiniappGameService:
                         data["visited"], data.get("moves", 0),
                         data.get("started_at"),
                     )
+                if state.game_type == GAME_TYPE_CHESS:
+                    data = dict(state.guesses or {})
+                    return self._chess_public_view(state, data)
                 return _public_view(state, list(state.guesses or []))
             return await self._replay_or_missing(session_id, user_id)
 
