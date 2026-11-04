@@ -3,7 +3,7 @@
  * chess board that works on desktop and mobile.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, newClientGuessId, type ChessState, type ChessMove, type ChessSquare, type ChessPiece } from '../api';
+import { api, newClientGuessId, type ChessState, type ChessMove, type ChessSquare } from '../api';
 import type { WebAppContext } from '../telegram';
 import { ErrorNotice, Loading } from '../components/ui';
 import { haptic } from '../telegram';
