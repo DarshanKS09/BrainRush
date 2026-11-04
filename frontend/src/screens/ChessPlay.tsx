@@ -70,31 +70,8 @@ export function ChessPlayScreen({
 
   const getBoard = useCallback((): ChessSquare[][] | null => {
     const s = stateRef.current;
-    if (!s) return null;
-    if (!Array.isArray(s.board) || s.board.length !== 64) return null;
-    const rows: ChessSquare[][] = [];
-    for (let r = 0; r < 8; r += 1) {
-      const row: ChessSquare[] = [];
-      for (let c = 0; c < 8; c += 1) {
-        const idx = r * 8 + c;
-        const piece = s.board[idx];
-        const light = (r + c) % 2 === 0;
-        let occupant: ChessPiece | null = null;
-        if (piece && piece !== '.') {
-          const col = piece.endsWith('w') ? 'white' : 'black';
-          const type = piece[0].toLowerCase() as ChessPiece['type'];
-          occupant = { color: col, type };
-        }
-        row.push({
-          color: light ? ('light' as const) : ('dark' as const),
-          occupant,
-          rank: r,
-          file: c,
-        });
-      }
-      rows.push(row);
-    }
-    return rows;
+    if (!s || !s.position || !Array.isArray(s.position.board) || s.position.board.length !== 8) return null;
+    return s.position.board;
   }, [state]);
 
   const getTurn = useCallback((): 'white' | 'black' => {
@@ -356,10 +333,10 @@ export function ChessPlayScreen({
           </button>
           <div className="flex items-center gap-2">
             <span className="rounded-full bg-panel px-3 py-1 text-xs font-bold uppercase tracking-wider text-neon-cyan">
-              {game.difficulty.charAt(0).toUpperCase() + game.difficulty.slice(1)}
+              {game.difficulty.charAt(0).toUpperCase() + game.difficulty.slice(1).replace('reflex', 'Reflex')}
             </span>
             <span className="rounded-full bg-panel px-3 py-1 text-xs font-bold text-slate-400">
-              {game.playerColor} · {getTurn()} to move
+              {getTurn()} to move
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -491,7 +468,7 @@ const BLACK_PIECES: Record<string, string> = {
   king: '♚',
   queen: '♛',
   rook: '♜',
-  bishop: '�',
+  bishop: '♝',
   knight: '♞',
   pawn: '♟',
 };
