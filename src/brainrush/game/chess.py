@@ -855,46 +855,6 @@ class ChessGame:
         # For now, we rely on 50-move rule and other checks.
         
         return None
-    
-    def _check_game_state_if(self, board: list[str], ep: tuple[int, int] | None, 
-                              castling: set[str], turn: int, halfmove_clock: int = 0) -> dict | None:
-        """Check game state for a given board position (used after applying move externally)."""
-        wc = {"K", "Q"} if turn == 0 else set()
-        bc = {"k", "q"} if turn == 1 else set()
-        legal = _legal_moves_for(board, ep, wc, bc, turn)
-        ai_color = 1 - turn
-        king_pos = _king_pos(board, turn)
-        in_check = king_pos is not None and _attacked_by(board, king_pos, ai_color, king_pos)
-        
-        if not legal:
-            if in_check:
-                return {
-                    "status": "checkmate",
-                    "winner": ai_color,
-                    "reason": "checkmate",
-                }
-            else:
-                return {
-                    "status": "stalemate",
-                    "winner": None,
-                    "reason": "stalemate",
-                }
-        
-        if halfmove_clock >= 100:
-            return {
-                "status": "draw",
-                "winner": None,
-                "reason": "50-move rule",
-            }
-        
-        if _insufficient_material(board):
-            return {
-                "status": "draw",
-                "winner": None,
-                "reason": "insufficient material",
-            }
-        
-        return None
 
     def ai_move(self, difficulty: str) -> dict | None:
         """Compute and apply an AI move. Returns the move or None if game over."""
