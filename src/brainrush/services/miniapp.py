@@ -253,6 +253,40 @@ def _chess_public_view(state, data: dict) -> dict:
     
     The full board state is visible to the client by design (like Maze Race).
     """
+    from brainrush.game import chess as chess_game
+
+    # Build position object for client rendering
+    castling_set = set(data.get("castling", [])) if data.get("castling") else set()
+    position = {
+        "fen": chess_game._to_fen(
+            data.get("board", []),
+            tuple(data["ep"]) if data.get("ep") else None,
+            data.get("turn", 0),
+            data.get("halfmove_clock", 0),
+            data.get("fullmove_number", 1),
+            castling_set,
+        ),
+        "board": data.get("board", []),
+        "turn": "white" if data.get("turn", 0) == 0 else "black",
+        "castling": {
+            "whiteKingSide": "K" in castling_set,
+            "whiteQueenSide": "Q" in castling_set,
+            "blackKingSide": "k" in castling_set,
+            "blackQueenSide": "q" in castling_set,
+        },
+        "enPassant": data.get("ep"),
+        "halfMoves": data.get("halfmove_clock", 0),
+        "fullMoves": data.get("fullmove_number", 1),
+        "legalMoves": [],
+        "selectedSquare": None,
+        "highlightedSquares": [],
+        "check": False,
+        "checkmate": False,
+        "stalemate": False,
+        "insufficientMaterial": False,
+        "moveHistory": data.get("move_history", []),
+    }
+
     return {
         "session_id": str(state.session_id),
         "game_type": GAME_TYPE_CHESS,
@@ -270,6 +304,7 @@ def _chess_public_view(state, data: dict) -> dict:
         "status": "completed" if data.get("game_over") else "started",
         "finished": data.get("game_over", False),
         "result_public": data.get("result", {}).get("outcome") if data.get("result") else None,
+        "position": position,
     }
 
 
@@ -356,7 +391,7 @@ def _active_view(state, service) -> dict:
         )
     if state.game_type == GAME_TYPE_CHESS:
         data = dict(state.guesses or {})
-        return service._chess_public_view(state, data)
+        _chess_public_view(state, data)
     return _public_view(state, list(state.guesses or []))
 
 
@@ -934,7 +969,7 @@ class MiniappGameService:
         )
         state.guesses = initial_state
         await self.session.flush()
-        return self._chess_public_view(state, initial_state)
+        _chess_public_view(state, initial_state)
 
     async def _start_reflex(self, *, user_id, db_row, difficulty: str) -> dict:
         try:
@@ -1425,7 +1460,7 @@ class MiniappGameService:
             
             state.guesses = data
             await self.session.flush()
-            return self._chess_public_view(state, data)
+            _chess_public_view(state, data)
     
     async def _complete_chess(self, state, data: dict, game_result: dict) -> dict:
         """Complete a chess game and record results."""
@@ -1484,7 +1519,7 @@ class MiniappGameService:
             user_id=state.user_id, day=moment.date(), xp_earned=xp_earned
         )
         await self.states.delete(state)
-        return self._chess_public_view(state, data)
+        _chess_public_view(state, data)
     
     async def _complete_color(
         self, state, data, entry, *, completed_levels: int, won: bool, config,
@@ -1616,7 +1651,7 @@ class MiniappGameService:
                     "winner": meta.get("winner"),
                 },
             }
-            return self._chess_public_view(state_ns, data)
+            _chess_public_view(state_ns, data)
         else:
             stored = [
                 {"id": f"past-{i}", "value": v}
@@ -1646,7 +1681,7 @@ class MiniappGameService:
                     )
                 if state.game_type == GAME_TYPE_CHESS:
                     data = dict(state.guesses or {})
-                    return self._chess_public_view(state, data)
+                    _chess_public_view(state, data)
                 return _public_view(state, list(state.guesses or []))
             return await self._replay_or_missing(session_id, user_id)
 
