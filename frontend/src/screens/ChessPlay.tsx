@@ -8,8 +8,6 @@ import type { WebAppContext } from '../telegram';
 import { ErrorNotice, Loading } from '../components/ui';
 import { haptic } from '../telegram';
 
-const MIN_BOARD_SIZE = 280;
-
 type PromotionPiece = 'knight' | 'bishop' | 'rook' | 'queen';
 
 function squareFromRankFile(r: number, c: number): string {
@@ -43,7 +41,15 @@ function flatBoardToSquares(board: string[]): ChessSquare[][] {
       let occupant: ChessPiece | null = null;
       if (pieceStr && pieceStr !== '.') {
         const color = pieceStr.endsWith('w') ? 'white' : 'black';
-        const type = pieceStr[0].toLowerCase() as ChessPiece['type'];
+        const typeMap: Record<string, ChessPiece['type']> = {
+          r: 'rook',
+          n: 'knight',
+          b: 'bishop',
+          q: 'queen',
+          k: 'king',
+          p: 'pawn',
+        };
+        const type = typeMap[pieceStr[0].toLowerCase()];
         occupant = { color, type };
       }
       row.push({
@@ -334,15 +340,6 @@ export function ChessPlayScreen({
     executeMove(promotionPending.from, promotionPending.to, piece);
   }, [promotionPending, executeMove]);
 
-  const getMoveHistory = useCallback((): string[] => {
-    const s = stateRef.current;
-    if (!s) return [];
-    if (Array.isArray(s.move_history)) {
-      return s.move_history.map((m) => m.notation);
-    }
-    return [];
-  }, [state]);
-
   const handleUndo = useCallback(async () => {
     const current = stateRef.current;
     if (!current || current.finished || busy) return;
@@ -498,7 +495,7 @@ export function ChessPlayScreen({
         <div
           ref={boardRef}
           className="rounded-2xl overflow-hidden shadow-card border-2 border-navy"
-          style={{ width: '100%', maxWidth: MIN_BOARD_SIZE, aspectRatio: '1' }}
+          style={{ width: '100%', maxWidth: 360, aspectRatio: '1' }}
         >
           <div className="grid grid-cols-8 grid-rows-8 w-full h-full">
             {getBoard()?.map((row, ri) =>
@@ -530,44 +527,7 @@ export function ChessPlayScreen({
                 );              })
             )}
           </div>
-      </div>
-    </div>
-
-      {/* Move history */}
-      <div className="rounded-2xl bg-panel p-3 shadow-card max-h-[140px] overflow-y-auto">
-        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Move History</h4>
-        {getMoveHistory().length === 0 ? (
-          <p className="text-sm text-slate-500 text-center py-2">No moves yet</p>
-        ) : (
-          <div className="flex flex-wrap gap-1">
-            {getMoveHistory().map((move, i) => (
-              <span
-                key={i}
-                className={`rounded-lg px-2 py-0.5 text-xs font-mono ${
-                  i % 2 === 0 ? 'bg-navy/50 text-slate-200' : 'bg-navy/30 text-slate-300'
-                }`}
-              >
-                {i % 2 === 0 ? `${Math.floor(i / 2) + 1}. ` : ''}{move}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Status bar */}
-      <div className="flex items-center justify-between text-xs text-slate-400">
-        <div className="flex items-center gap-2">
-          <span className="w-3 h-3 rounded-full" style={{ backgroundColor: getTurn() === 'white' ? '#fff' : '#000' }} />
-          <span>{getTurn()} to move</span>
         </div>
-        {(() => {
-          const s = stateRef.current;
-          if (!s) return null;
-          if (s.position && typeof s.position.check === 'boolean') return s.position.check ? (
-            <span className="text-rose-400 font-bold animate-pulse">⚠ Check!</span>
-          ) : null;
-          return null;
-        })()}
       </div>
 
       {/* Promotion pending notice */}
@@ -578,22 +538,6 @@ export function ChessPlayScreen({
           </p>
         </div>
       )}
-
-      {/* Restart button */}
-      <div className="flex gap-2">
-        <button
-          onClick={handleRestart}
-          disabled={busy}
-          className="flex-1 rounded-xl bg-panel py-2 text-xs font-bold text-slate-300 active:scale-95 disabled:opacity-50"
-        >
-          ↻ Restart
-        </button>
-      </div>
-
-      <p className="text-[10px] text-center text-slate-500">
-        Tap a piece to select it, then tap a highlighted square to move. Ctrl+Z to undo, Ctrl+R to restart.
-      </p>
-
     </div>
   );
 }
