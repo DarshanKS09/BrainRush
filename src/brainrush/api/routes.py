@@ -75,7 +75,7 @@ class ReflexRoundInput(BaseModel):
 
 
 class PerfectStopRequest(BaseModel):
-    actual_ms: int
+    actual_ms: float
     client_submission_id: str = Field(min_length=1, max_length=64)
 
 

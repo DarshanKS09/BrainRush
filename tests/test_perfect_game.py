@@ -532,6 +532,23 @@ def test_perfect_routes_and_catalog(monkeypatch):
     settings = Settings(BOT_TOKEN="t",
                         DATABASE_URL="postgresql+asyncpg://u:p@localhost:5432/db")
 
+    # The route-level Pydantic model for /stop used to require an integer
+    # `actual_ms`, which rejected the frontend's float submission and caused
+    # every Perfect Stop attempt to return 422. It now accepts a float, so
+    # the route accepts the frontend payload and passes it to the stub.
+    model_fields = getattr(routes.PerfectStopRequest, "model_fields", None)
+    if model_fields is not None:
+        actual_ms_metadata = model_fields.get("actual_ms")
+        assert actual_ms_metadata is not None
+        annotation = actual_ms_metadata.annotation
+        assert annotation is not None
+        assert getattr(annotation, "__origin__", None) is not None or getattr(annotation, "__name__", "") == "float", annotation
+    else:
+        field_info = routes.PerfectStopRequest.__fields__["actual_ms"]
+        outer_type = getattr(field_info, "outer_type_", None)
+        assert outer_type is not None
+        assert getattr(outer_type, "__origin__", None) is not None or getattr(outer_type, "__name__", "") == "float"
+
     class Stub:
         instance = None
 
@@ -542,12 +559,12 @@ def test_perfect_routes_and_catalog(monkeypatch):
         async def start_game(self, *, user_id, difficulty="hard",
                              game_type="number_guessing", match_id=None):
             self.calls.append(("start", game_type, difficulty, match_id))
-            return {"session_id": "s1", "game_type": game_type, "finished": False}
+            return {"session_id": str(uuid.uuid4()), "game_type": game_type, "finished": False, "target_ms": 5123, "difficulty": difficulty, "max_attempts": 1, "attempts_used": 0, "attempts_left": 1, "status": "started", "result": None}
 
         async def stop_perfect(self, *, session_id, user_id, actual_ms,
                                client_submission_id):
             self.calls.append(("stop", session_id, actual_ms, client_submission_id))
-            return {"finished": True, "result": {"xp_earned": 100}}
+            return {"session_id": str(session_id), "game_type": "perfect_second", "difficulty": "easy", "target_ms": 5123, "actual_ms": actual_ms, "error_ms": 123.4, "accuracy_percent": 97.6, "xp_earned": 100, "finished": True, "status": "completed", "result": {"outcome": "win", "score": 123, "xp_earned": 100, "secret": None, "target_ms": 5123, "actual_ms": actual_ms, "error_ms": 123.4, "accuracy_percent": 97.6}}
 
         async def get_state(self, *, session_id, user_id):
             return {"finished": False}
@@ -580,18 +597,21 @@ def test_perfect_routes_and_catalog(monkeypatch):
     assert started.status_code == 200
     start_body = started.json()
 
-
-    # Use a known-good session id from a completed game to test stop endpoint
+    # Use a known-good session id from a completed game to test stop endpoint.
     perfect_session = start_body["session_id"]
     ok = client.post(f"/api/sessions/{perfect_session}/stop", headers=headers,
                      json={"actual_ms": 5123.4, "client_submission_id": "stop-1"})
-    # The stub service may validate actual_ms differently; accept success or validation error
-    assert ok.status_code in (200, 422)
-    # Stub tracks calls; verify stop was called at least once after the start
-    # Stub tracks calls; verify stop was called at least once after the start
-    # Note: the stub may not receive the stop call if the session was already completed
-    # or if the test setup doesn't properly route to the stub. Accept either way.
-    pass  # Stub tracking is test-dependent; the important assertions above already passed
+    assert ok.status_code == 200, ok.text
+    body = ok.json()
+    assert body["finished"] is True
+    assert body["result"]["xp_earned"] == 100
+    assert body["result"]["actual_ms"] == 5123.4
+    assert body["result"]["error_ms"] == pytest.approx(123.4)
+    # Duplicate stop is idempotent: same submission id replays stored result.
+    again = client.post(f"/api/sessions/{perfect_session}/stop", headers=headers,
+                        json={"actual_ms": 5123.4, "client_submission_id": "stop-1"})
+    assert again.status_code == 200, again.text
+    assert again.json()["result"]["xp_earned"] == 100
 
     catalog = client.get("/api/games", headers=headers).json()
     by_id = {g["id"]: g for g in catalog["games"]}

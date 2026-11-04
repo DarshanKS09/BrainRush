@@ -839,6 +839,24 @@ class MiniappGameService:
             scored = perfect.score_result(target_ms=state.secret, actual_ms=actual)
             return await self._complete_perfect(state, scored)
 
+    async def _replay_or_missing(self, session_id: uuid.UUID, user_id: uuid.UUID) -> dict:
+        """Replay a stored completed result for a finished/foreign session,
+        or raise NotFoundError when there is nothing to return.
+
+        Called when get_for_update found no state row (finished, abandoned,
+        or never existed). For an owned completed session we return the stored
+        result so retries and race-edges are idempotent rather than 404.
+        """
+        session_row = await self.sessions.get_by_id(session_id=session_id)
+        if session_row is None or session_row.user_id != user_id:
+            raise NotFoundError("session not found")
+        if session_row.status != "completed":
+            raise NotFoundError("session not found")
+        result_row = await self.results.get_by_session_id(session_id=session_id)
+        if result_row is None:
+            raise NotFoundError("session not found")
+        return _completed_view(session_row, result_row, [])
+
     async def _complete_perfect(self, state, scored: dict):
         from brainrush.services import utcnow as _utcnow
 
