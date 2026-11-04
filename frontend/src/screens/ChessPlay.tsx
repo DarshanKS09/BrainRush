@@ -243,12 +243,6 @@ export function ChessPlayScreen({
     return legalMovesForSquare(board, from, turn).includes(to);
   }, [getBoard, getTurn]);
 
-  const isHighlightedSquare = useCallback((sq: string): boolean => {
-    if (!selectedSquare) return false;
-    const legal = getLegalMoves();
-    return legal.includes(sq);
-  }, [selectedSquare, getLegalMoves]);
-
   const handleSquareClick = useCallback((sq: string) => {
     const current = stateRef.current;
     if (!current || current.finished || busy) return;
@@ -502,25 +496,29 @@ export function ChessPlayScreen({
               row.map((square, ci) => {
                 const sq = squareFromRankFile(ri, ci);
                 const isSelected = selectedSquare === sq;
-                const isHighlighted = isHighlightedSquare(sq);
-                const isLegal = isLegalMove(selectedSquare ?? '', sq);
+                  const isLegalMoveFromSelected = selectedSquare ? isLegalMove(selectedSquare, sq) : false;
+  // Get current turn color from game state
+  const turnColor = game.turn === 0 ? 'white' : 'black';
+  // Check if this legal move is a capture: destination square has an opponent piece
+  const hasOccupant = square.occupant && square.occupant.color !== turnColor;
+  const isCapture = selectedSquare && isLegalMoveFromSelected && hasOccupant;
 
-                const bgColor = square.color === 'light'
-                  ? (isSelected ? 'bg-yellow-300' : isHighlighted ? 'bg-neon-cyan/40' : 'bg-[#f0d9b5]')
-                  : (isSelected ? 'bg-yellow-400' : isHighlighted ? 'bg-neon-cyan/30' : 'bg-[#b58863]');
+  // Small white dot for legal moves (non-capture)
+  const legalDot = isLegalMoveFromSelected && !isCapture ? 'border-2 border-white/80 rounded-sm' : '';
+  // Ring indicator for capture moves
+  const captureRing = isCapture ? 'ring-2 ring-neon-cyan/60 ring-offset-white/20 rounded-sm' : '';
+  // Use the indicator as the background color overlay
+  const moveIndicator = isLegalMoveFromSelected ? (isCapture ? captureRing : legalDot) : '';
+
+  const bgColor = square.color === 'light'
+    ? (isSelected ? 'bg-yellow-300' : moveIndicator ? moveIndicator : 'bg-[#f0d9b5]')
+    : (isSelected ? 'bg-yellow-400' : moveIndicator ? moveIndicator : 'bg-[#b58863]');
 
                 const piece = square.occupant;
                 const pieceUnicode = piece ? (piece.color === 'white' ? WHITE_PIECES[piece.type] : BLACK_PIECES[piece.type]) : '';
 
                 return (
-                  <button
-                    key={sq}
-                    onClick={() => handleSquareClick(sq)}
-                    disabled={busy || game.finished}
-                    className={`w-full h-full flex items-center justify-center text-3xl font-bold select-none transition-colors duration-100 ${bgColor} ${
-                      isLegal && !isSelected ? 'ring-2 ring-neon-cyan/60 rounded-sm' : ''
-                    }`}
-                    aria-label={`${sq}${piece ? ` ${piece.color} ${piece.type}` : ' empty'}`}
+                  <button                    key={sq}                    onClick={() => handleSquareClick(sq)}                    disabled={busy || game.finished}                    className={`w-full h-full flex items-center justify-center text-3xl font-bold select-none transition-colors duration-100 ${bgColor}`}                    aria-label={`${sq}${piece ? ` ${piece.color} ${piece.type}` : ' empty'}`}
                   >
                     {pieceUnicode}
                   </button>
