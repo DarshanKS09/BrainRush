@@ -3,7 +3,7 @@
  * chess board that works on desktop and mobile.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, newClientGuessId, type ChessState, type ChessMove, type ChessSquare } from '../api';
+import { api, newClientGuessId, type ChessState, type ChessMove, type ChessSquare, type ChessPiece } from '../api';
 import type { WebAppContext } from '../telegram';
 import { ErrorNotice, Loading } from '../components/ui';
 import { haptic } from '../telegram';
@@ -24,6 +24,134 @@ function rankFileFromSquare(sq: string): { r: number; c: number } | null {
   const rank = sq[1];
   if (file < 'a' || file > 'h' || rank < '1' || rank > '8') return null;
   return { r: 8 - parseInt(rank, 10), c: file.charCodeAt(0) - 'a'.charCodeAt(0) };
+}
+
+/**
+ * The backend stores the chess board as a flat `string[]` of 64 piece
+ * strings (e.g. `"Rw"`, `"Pb"`, `"."`) in row-major order. The frontend
+ * `ChessSquare` type expects an 8×8 grid with `color`, `occupant`, `rank`,
+ * and `file` per square. Convert the flat storage format into the view
+ * format the board renderer needs.
+ */
+function flatBoardToSquares(board: string[]): ChessSquare[][] {
+  const squares: ChessSquare[][] = [];
+  for (let r = 0; r < 8; r++) {
+    const row: ChessSquare[] = [];
+    for (let c = 0; c < 8; c++) {
+      const pieceStr = board[r * 8 + c];
+      const isLight = (r + c) % 2 === 0;
+      let occupant: ChessPiece | null = null;
+      if (pieceStr && pieceStr !== '.') {
+        const color = pieceStr.endsWith('w') ? 'white' : 'black';
+        const type = pieceStr[0].toLowerCase() as ChessPiece['type'];
+        occupant = { color, type };
+      }
+      row.push({
+        color: isLight ? 'light' : 'dark',
+        occupant,
+        rank: r,
+        file: c,
+      });
+    }
+    squares.push(row);
+  }
+  return squares;
+}
+
+/**
+ * Compute the legal destination squares for the piece on `from`, using only
+ * the board geometry and turn. This is a best-effort frontend validator: it
+ * does not handle castling, en passant, or pinned-piece detection — the
+ * backend is authoritative and will reject illegal moves. It is sufficient
+ * to enable piece selection and legal-move highlighting even though the
+ * backend's `position.legalMoves` is not populated.
+ */
+function legalMovesForSquare(
+  board: ChessSquare[][],
+  from: string,
+  turn: 'white' | 'black',
+): string[] {
+  const pos = rankFileFromSquare(from);
+  if (!pos) return [];
+  const piece = board[pos.r][pos.c].occupant;
+  if (!piece || piece.color !== turn) return [];
+
+  const moves: string[] = [];
+  const { r: sr, c: sc } = pos;
+
+  const step = (dr: number, dc: number, max: number, jump: boolean) => {
+    for (let i = 1; i <= max; i++) {
+      const nr = sr + dr * i;
+      const nc = sc + dc * i;
+      if (nr < 0 || nr > 7 || nc < 0 || nc > 7) break;
+      const target = board[nr][nc];
+      const sq = squareFromRankFile(nr, nc);
+      if (!sq) break;
+      if (target.occupant) {
+        if (target.occupant.color !== turn) moves.push(sq);
+        break;
+      }
+      moves.push(sq);
+      if (jump) break;
+    }
+  };
+
+  switch (piece.type) {
+    case 'pawn':
+      // White moves toward rank 1 (row decreases), black toward rank 8 (row increases).
+      const dir = piece.color === 'white' ? -1 : 1;
+      const startRow = piece.color === 'white' ? 6 : 1;
+      // One step forward
+      const one = sr + dir;
+      if (one >= 0 && one < 8 && !board[one][sc].occupant) {
+        moves.push(squareFromRankFile(one, sc));
+        // Two steps from starting rank
+        if (sr === startRow) {
+          const two = sr + dir * 2;
+          if (two >= 0 && two < 8 && !board[two][sc].occupant) {
+            moves.push(squareFromRankFile(two, sc));
+          }
+        }
+      }
+      // Captures
+      for (const dc of [-1, 1]) {
+        const nr = sr + dir;
+        const nc = sc + dc;
+        if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+          const target = board[nr][nc];
+          if (target.occupant && target.occupant.color !== turn) {
+            moves.push(squareFromRankFile(nr, nc));
+          }
+        }
+      }
+      break;
+    case 'knight':
+      for (const [dr, dc] of [
+        [-2, -1], [-2, 1], [-1, -2], [-1, 2],
+        [1, -2], [1, 2], [2, -1], [2, 1],
+      ]) step(dr, dc, 1, true);
+      break;
+    case 'bishop':
+      for (const [dr, dc] of [[-1, -1], [-1, 1], [1, -1], [1, 1]]) step(dr, dc, 7, false);
+      break;
+    case 'rook':
+      for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) step(dr, dc, 7, false);
+      break;
+    case 'queen':
+      for (const [dr, dc] of [
+        [-1, -1], [-1, 1], [1, -1], [1, 1],
+        [-1, 0], [1, 0], [0, -1], [0, 1],
+      ]) step(dr, dc, 7, false);
+      break;
+    case 'king':
+      for (const [dr, dc] of [
+        [-1, -1], [-1, 0], [-1, 1],
+        [0, -1],           [0, 1],
+        [1, -1],  [1, 0],  [1, 1],
+      ]) step(dr, dc, 1, true);
+      break;
+  }
+  return moves;
 }
 
 export function ChessPlayScreen({
@@ -70,8 +198,18 @@ export function ChessPlayScreen({
 
   const getBoard = useCallback((): ChessSquare[][] | null => {
     const s = stateRef.current;
-    if (!s || !s.position || !Array.isArray(s.position.board) || s.position.board.length !== 8) return null;
-    return s.position.board;
+    if (!s || !s.position) return null;
+    const rawBoard = s.position.board;
+    if (!Array.isArray(rawBoard)) return null;
+    // Backend stores board as a flat string[] of 64 piece strings; convert to 8×8 grid.
+    if (rawBoard.length === 64 && typeof rawBoard[0] === 'string') {
+      return flatBoardToSquares(rawBoard as unknown as string[]);
+    }
+    // Already an 8×8 ChessSquare[][] grid.
+    if (rawBoard.length === 8 && Array.isArray(rawBoard[0])) {
+      return rawBoard as ChessSquare[][];
+    }
+    return null;
   }, [state]);
 
   const getTurn = useCallback((): 'white' | 'black' => {
@@ -84,13 +222,20 @@ export function ChessPlayScreen({
   const getLegalMoves = useCallback((): string[] => {
     const s = stateRef.current;
     if (!s) return [];
-    if (s.position && Array.isArray(s.position.legalMoves)) return s.position.legalMoves;
-    return [];
-  }, [state]);
+    const board = getBoard();
+    if (!board) return [];
+    const selected = selectedSquare;
+    if (!selected) return [];
+    const turn = getTurn();
+    return legalMovesForSquare(board, selected, turn);
+  }, [state, selectedSquare, getBoard, getTurn]);
 
-  const isLegalMove = useCallback((_from: string, to: string): boolean => {
-    return getLegalMoves().includes(to);
-  }, [getLegalMoves]);
+  const isLegalMove = useCallback((from: string, to: string): boolean => {
+    const board = getBoard();
+    if (!board) return false;
+    const turn = getTurn();
+    return legalMovesForSquare(board, from, turn).includes(to);
+  }, [getBoard, getTurn]);
 
   const isHighlightedSquare = useCallback((sq: string): boolean => {
     if (!selectedSquare) return false;
@@ -387,10 +532,8 @@ export function ChessPlayScreen({
           </div>
       </div>
     </div>
-  );
-    
 
-      // Move history
+      {/* Move history */}
       <div className="rounded-2xl bg-panel p-3 shadow-card max-h-[140px] overflow-y-auto">
         <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Move History</h4>
         {getMoveHistory().length === 0 ? (
@@ -416,10 +559,10 @@ export function ChessPlayScreen({
         <div className="flex items-center gap-2">
           <span className="w-3 h-3 rounded-full" style={{ backgroundColor: getTurn() === 'white' ? '#fff' : '#000' }} />
           <span>{getTurn()} to move</span>
-        </div>        {(() => {
+        </div>
+        {(() => {
           const s = stateRef.current;
           if (!s) return null;
-          // Check-ish indicator: derive from position if available, else from raw state.
           if (s.position && typeof s.position.check === 'boolean') return s.position.check ? (
             <span className="text-rose-400 font-bold animate-pulse">⚠ Check!</span>
           ) : null;
@@ -450,6 +593,7 @@ export function ChessPlayScreen({
       <p className="text-[10px] text-center text-slate-500">
         Tap a piece to select it, then tap a highlighted square to move. Ctrl+Z to undo, Ctrl+R to restart.
       </p>
+
     </div>
   );
 }
