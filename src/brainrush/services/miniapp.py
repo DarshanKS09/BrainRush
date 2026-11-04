@@ -391,7 +391,7 @@ def _active_view(state, service) -> dict:
         )
     if state.game_type == GAME_TYPE_CHESS:
         data = dict(state.guesses or {})
-        _chess_public_view(state, data)
+        return _chess_public_view(state, data)
     return _public_view(state, list(state.guesses or []))
 
 
@@ -969,7 +969,7 @@ class MiniappGameService:
         )
         state.guesses = initial_state
         await self.session.flush()
-        _chess_public_view(state, initial_state)
+        return _chess_public_view(state, initial_state)
 
     async def _start_reflex(self, *, user_id, db_row, difficulty: str) -> dict:
         try:
@@ -1460,7 +1460,7 @@ class MiniappGameService:
             
             state.guesses = data
             await self.session.flush()
-            _chess_public_view(state, data)
+            return _chess_public_view(state, data)
     
     async def _complete_chess(self, state, data: dict, game_result: dict) -> dict:
         """Complete a chess game and record results."""
@@ -1519,7 +1519,7 @@ class MiniappGameService:
             user_id=state.user_id, day=moment.date(), xp_earned=xp_earned
         )
         await self.states.delete(state)
-        _chess_public_view(state, data)
+        return _chess_public_view(state, data)
     
     async def _complete_color(
         self, state, data, entry, *, completed_levels: int, won: bool, config,
@@ -1651,7 +1651,7 @@ class MiniappGameService:
                     "winner": meta.get("winner"),
                 },
             }
-            _chess_public_view(state_ns, data)
+            return _chess_public_view(state_ns, data)
         else:
             stored = [
                 {"id": f"past-{i}", "value": v}
@@ -1681,7 +1681,7 @@ class MiniappGameService:
                     )
                 if state.game_type == GAME_TYPE_CHESS:
                     data = dict(state.guesses or {})
-                    _chess_public_view(state, data)
+                    return _chess_public_view(state, data)
                 return _public_view(state, list(state.guesses or []))
             return await self._replay_or_missing(session_id, user_id)
 
