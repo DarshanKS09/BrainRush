@@ -316,8 +316,8 @@ def _pawn_targets(r: int, c: int, color: int, ep: tuple[int, int] | None, board:
         prom = _promotion_rank(nr, color)
         tag = "q" if prom is None else "q"
         out.append((nr, c, tag))
-        # double push from starting rank
-        if r == (6 if color == 0 else 1) and board[(r + 2 * dirn) * 8 + c] == ".":
+        # double push from starting rank (only if both intermediate and destination are empty)
+        if r == (6 if color == 0 else 1) and board[(r + dirn) * 8 + c] == "." and board[(r + 2 * dirn) * 8 + c] == ".":
             out.append((r + 2 * dirn, c, ""))
     return out
 
