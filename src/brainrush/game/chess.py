@@ -1039,6 +1039,64 @@ def _insufficient_material(board: list[str]) -> bool:
     return False
 
 
+def _check_game_state_if(
+    board: list[str],
+    ep: tuple[int, int] | None,
+    castling: set[str] | list[str],
+    turn: int,
+    halfmove_clock: int,
+) -> dict | None:
+    """Check game state for a given position. Returns game over info or None.
+
+    turn is the side to move.
+    """
+    if isinstance(castling, list):
+        castling_set = set(castling)
+    else:
+        castling_set = set(castling) if castling else set()
+
+    wc = {"K", "Q"} if turn == 0 else set()
+    bc = {"k", "q"} if turn == 1 else set()
+    # intersect with actual castling rights
+    wc = wc & castling_set
+    bc = bc & castling_set
+
+    legal = _legal_moves_for(board, ep, wc, bc, turn)
+    opponent_color = 1 - turn
+    king_pos = _king_pos(board, turn)
+    in_check = king_pos is not None and _attacked_by(board, king_pos, opponent_color, king_pos)
+
+    if not legal:
+        if in_check:
+            return {
+                "status": "checkmate",
+                "winner": opponent_color,  # the side that just moved
+                "reason": "checkmate",
+            }
+        else:
+            return {
+                "status": "stalemate",
+                "winner": None,
+                "reason": "stalemate",
+            }
+
+    if halfmove_clock >= 100:
+        return {
+            "status": "draw",
+            "winner": None,
+            "reason": "50-move rule",
+        }
+
+    if _insufficient_material(board):
+        return {
+            "status": "draw",
+            "winner": None,
+            "reason": "insufficient material",
+        }
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # AI evaluation and move selection
 # ---------------------------------------------------------------------------
@@ -1145,7 +1203,16 @@ def _choose_ai_move(
         
         # If we have depth budget, look ahead one more ply (opponent's response)
         if depth >= 2:
-            opponent_legal = _legal_moves_for(new_board, new_ep, castling, 1 - color)
+            opp_color = 1 - color
+            if isinstance(castling, list):
+                castling_set = set(castling)
+            else:
+                castling_set = set(castling) if castling else set()
+            opp_wc = {"K", "Q"} if opp_color == 0 else set()
+            opp_bc = {"k", "q"} if opp_color == 1 else set()
+            opp_wc = opp_wc & castling_set
+            opp_bc = opp_bc & castling_set
+            opponent_legal = _legal_moves_for(new_board, new_ep, opp_wc, opp_bc, opp_color)
             if opponent_legal:
                 worst_case = 1000000
                 for opp_move in opponent_legal[:8]:  # limit opponent responses for speed
@@ -1183,7 +1250,7 @@ def _gives_check(
     king_pos = _king_pos(new_board, enemy_color)
     if king_pos is None:
         return False
-    return _attacked_by(new_board, king_pos, color, king_pos, king_pos)
+    return _attacked_by(new_board, king_pos, color, king_pos)
 
 
 def _move_equals_robust(m1: dict, m2: dict) -> bool:

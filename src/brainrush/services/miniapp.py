@@ -1382,6 +1382,14 @@ class MiniappGameService:
             )
             
             if game_state:
+                winner_color = game_state.get("winner")
+                if winner_color is not None:
+                    outcome = "win" if winner_color == player_col else "loss"
+                    winner = "player" if winner_color == player_col else "ai"
+                else:
+                    outcome = "draw"
+                    winner = None
+                xp_earned = chess_game._xp_for_result(outcome, difficulty)
                 data["game_over"] = True
                 data["result"] = {
                     "outcome": outcome,
@@ -1396,11 +1404,15 @@ class MiniappGameService:
             
             # AI's turn - compute AI move
             if data["turn"] != player_col:
+                ai_wc = {"K", "Q"} if data["turn"] == 0 else set()
+                ai_bc = {"k", "q"} if data["turn"] == 1 else set()
+                ai_wc = ai_wc & set(new_castling)
+                ai_bc = ai_bc & set(new_castling)
                 ai_legal = chess_game._legal_moves_for(
-                    new_board, new_ep, wc_after if data["turn"] == 0 else bc_after, data["turn"]
+                    new_board, new_ep, ai_wc, ai_bc, data["turn"]
                 )
                 ai_move = chess_game._choose_ai_move(
-                    new_board, new_ep, new_castling, data["turn"], ai_legal,
+                    new_board, new_ep, set(new_castling), data["turn"], ai_legal,
                     chess_game.CHESS_DIFFICULTIES[difficulty]
                 )
                 if ai_move:
