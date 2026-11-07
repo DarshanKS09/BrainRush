@@ -31,6 +31,7 @@ from brainrush.game import number_guessing as guessing
 from brainrush.game import perfect_second as perfect_game
 from brainrush.game import reflex_rush as reflex_game
 from brainrush.game import chess as chess_game
+from brainrush.game import focus_rush as focus_game
 
 router = APIRouter(prefix="/api")
 
@@ -201,6 +202,17 @@ async def games() -> dict:
                 }
                 for did in chess_game.DIFFICULTIES
             }
+        elif entry["id"] == "focus_rush":
+            item["xp_rules"] = {
+                did: {
+                    "base_xp": 10,
+                    "accuracy_bonus": 5,
+                    "combo_bonus": 3,
+                    "round_bonus": 2,
+                    "difficulty_multiplier": 1.0,
+                }
+                for did in focus_game.FOCUS_DIFFICULTIES.keys()
+            }
         catalog.append(item)
     return {"games": catalog}
 
@@ -266,6 +278,30 @@ async def move(
         client_move_id=body.client_move_id,
     )
 
+@router.post("/sessions/{session_id}/focus-tap")
+async def focus_tap(
+    session_id: uuid.UUID,
+    body: dict,
+    identity: IdentityDep,
+    session: SessionDep,
+) -> dict:
+    """Submit one Focus Rush tap.
+
+    Body: {{ "color": str, "shape": str, "client_move_id": str }}
+    """
+    color = body.get("color")
+    shape = body.get("shape")
+    client_move_id = body.get("client_move_id")
+    if not color or not shape or not client_move_id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="color, shape, and client_move_id are required")
+    return await _service(session).focus_tap(
+        session_id=session_id,
+        user_id=identity["user_id"],
+        color=color,
+        shape=shape,
+        client_move_id=client_move_id,
+    )
 
 @router.post("/sessions/{session_id}/direction")
 async def direction(

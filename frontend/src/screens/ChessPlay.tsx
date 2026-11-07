@@ -518,7 +518,12 @@ export function ChessPlayScreen({
                 const pieceUnicode = piece ? (piece.color === 'white' ? WHITE_PIECES[piece.type] : BLACK_PIECES[piece.type]) : '';
 
                 return (
-                  <button                    key={sq}                    onClick={() => handleSquareClick(sq)}                    disabled={busy || game.finished}                    className={`w-full h-full flex items-center justify-center text-3xl font-bold select-none transition-colors duration-100 ${bgColor}`}                    aria-label={`${sq}${piece ? ` ${piece.color} ${piece.type}` : ' empty'}`}
+                  <button
+                    key={sq}
+                    onClick={() => handleSquareClick(sq)}
+                    disabled={busy || game.finished}
+                    className={`w-full h-full flex items-center justify-center text-3xl font-bold select-none transition-colors duration-100 ${bgColor}`}
+                    aria-label={`${sq}${piece ? ` ${piece.color} ${piece.type}` : ' empty'}`}
                   >
                     {pieceUnicode}
                   </button>

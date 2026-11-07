@@ -20,6 +20,7 @@ from __future__ import annotations
 import uuid
 from datetime import timedelta
 from types import SimpleNamespace
+from dataclasses import asdict
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,6 +42,7 @@ from brainrush.game import perfect_second as perfect
 from brainrush.game import reflex_rush as reflex
 from brainrush.game import maze_race as maze
 from brainrush.game import chess as chess_game
+from brainrush.game import focus_rush as focus_game
 from brainrush.game import multiplayer as mp
 from brainrush.game.progression import level_for_xp
 from brainrush.services import utcnow
@@ -51,20 +53,20 @@ GAME_TYPE_REFLEX_RUSH = "reflex_rush"
 GAME_TYPE_PERFECT_SECOND = perfect.GAME_TYPE
 GAME_TYPE_MAZE_RACE = maze.GAME_TYPE
 GAME_TYPE_CHESS = chess_game.GAME_TYPE
+GAME_TYPE_FOCUS_RUSH = "focus_rush"
 
 # Sessions left `started` longer than this are dead (app closed, failed
 # submit, lobby exit without cancel): genuinely active games finish in
 # minutes, so a day is conservative. Expired rows keep their history.
 STALE_SESSION_TTL = timedelta(hours=24)
 
-PLAYABLE_GAME_TYPES = frozenset({GAME_TYPE_NUMBER_GUESSING, GAME_TYPE_COLOR_SEQUENCE, GAME_TYPE_REFLEX_RUSH, GAME_TYPE_PERFECT_SECOND, GAME_TYPE_MAZE_RACE, GAME_TYPE_CHESS})
+PLAYABLE_GAME_TYPES = frozenset({GAME_TYPE_NUMBER_GUESSING, GAME_TYPE_COLOR_SEQUENCE, GAME_TYPE_REFLEX_RUSH, GAME_TYPE_PERFECT_SECOND, GAME_TYPE_MAZE_RACE, GAME_TYPE_CHESS, GAME_TYPE_FOCUS_RUSH})
 
 DIFFICULTIES: dict[str, guessing.NumberGuessingConfig] = {
     "easy": guessing.NumberGuessingConfig(max_attempts=15),
     "medium": guessing.NumberGuessingConfig(max_attempts=10),
     "hard": guessing.NumberGuessingConfig(),
 }
-
 MAZE_DIFFICULTIES: dict[str, maze.MazeConfig] = {
     "easy": maze.MazeConfig(
         rows=9, cols=9, branching=2, par_time_s=60,
@@ -78,6 +80,81 @@ MAZE_DIFFICULTIES: dict[str, maze.MazeConfig] = {
         rows=17, cols=17, branching=12, par_time_s=200,
         base_xp=100, time_bonus_xp=50, path_bonus_xp=30,
     ),
+}
+
+FOCUS_DIFFICULTIES: dict[str, dict[str, Any]] = {
+    "level_1": {
+        "num_colors": 1,
+        "num_shapes": 1,
+        "total_targets": 4,
+        "distractor_ratio": 3,
+        "instruction_ttl_ms": 5_000,
+        "round_ms": 3_000,
+        "combo_threshold": 5,
+        "correct_bonus": 10,
+        "incorrect_penalty_life": 1,
+        "miss_penalty_life": 0.5,
+    },
+    "level_2": {
+        "num_colors": 2,
+        "num_shapes": 2,
+        "total_targets": 8,
+        "distractor_ratio": 3,
+        "instruction_ttl_ms": 4_000,
+        "round_ms": 2_500,
+        "combo_threshold": 5,
+        "correct_bonus": 10,
+        "incorrect_penalty_life": 1,
+        "miss_penalty_life": 0.5,
+    },
+    "level_3": {
+        "num_colors": 3,
+        "num_shapes": 2,
+        "total_targets": 12,
+        "distractor_ratio": 3,
+        "instruction_ttl_ms": 3_500,
+        "round_ms": 2_000,
+        "combo_threshold": 5,
+        "correct_bonus": 10,
+        "incorrect_penalty_life": 1,
+        "miss_penalty_life": 0.5,
+    },
+    "level_4": {
+        "num_colors": 3,
+        "num_shapes": 3,
+        "total_targets": 15,
+        "distractor_ratio": 4,
+        "instruction_ttl_ms": 3_000,
+        "round_ms": 1_500,
+        "combo_threshold": 7,
+        "correct_bonus": 10,
+        "incorrect_penalty_life": 1,
+        "miss_penalty_life": 0.5,
+    },
+    "level_5": {
+        "num_colors": 4,
+        "num_shapes": 3,
+        "total_targets": 20,
+        "distractor_ratio": 4,
+        "instruction_ttl_ms": 2_500,
+        "round_ms": 1_200,
+        "combo_threshold": 7,
+        "correct_bonus": 10,
+        "incorrect_penalty_life": 1,
+        "miss_penalty_life": 0.5,
+    },
+    "level_6": {
+        "num_colors": 4,
+        "num_shapes": 4,
+        "total_targets": 25,
+        "distractor_ratio": 4,
+        "instruction_ttl_ms": 2_000,
+        "round_ms": 1_000,
+        "combo_threshold": 10,
+        "correct_bonus": 10,
+        "incorrect_penalty_life": 1,
+        "miss_penalty_life": 0.5,
+    },
 }
 
 CATALOG = [
@@ -161,6 +238,15 @@ CATALOG = [
         "playable": True,
         "difficulties": [
             {"id": did} for did in chess_game.DIFFICULTIES
+        ],
+    },
+    {
+        "id": "focus_rush",
+        "title": "Focus Rush",
+        "description": "Tap only the shapes matching the current instruction while ignoring all distractors. 60-second attention challenge.",
+        "playable": True,
+        "difficulties": [
+            {"id": did} for did in focus_game.FOCUS_DIFFICULTIES.keys()
         ],
     },
     {
@@ -354,6 +440,42 @@ def _perfect_public_view(state) -> dict:
         "status": "started",
         "finished": False,
         "result": None,
+    }
+
+
+def _focus_rush_public_view(state, data: dict, *, result: dict | None = None, game_over: bool = False, outcome: str | None = None, score: int | None = None) -> dict:
+    """Public Focus Rush state: the full game state is sent to client for rendering.
+        The server is authoritative for game state, but the client renders the
+    board locally based on the current round instruction, target color/shape,
+    and remaining lives/score/combo.
+    """
+    cfg = FOCUS_DIFFICULTIES.get(data.get("difficulty", "level_1"), FOCUS_DIFFICULTIES["level_1"])
+    level = data.get("level", 1)
+    round_data = data.get("current_round", {})
+    return {
+        "session_id": str(state.session_id),
+        "game_type": GAME_TYPE_FOCUS_RUSH,
+        "difficulty": data.get("difficulty", "level_1"),
+        "level": level,
+        "time_remaining": data.get("time_remaining", 60_000) // 1000,
+        "lives": data.get("lives", 3),
+        "score": data.get("score", 0),
+        "combo": data.get("combo", 0),
+        "highest_round": data.get("highest_round", 0),
+        "accuracy_percent": round(data.get("accuracy_correct", 0) / max(data.get("accuracy_total", 1), 1) * 100, 1),
+        "best_combo": data.get("best_combo", 0),
+        "rounds_completed": data.get("rounds_completed", 0),
+        "game_over": game_over,
+        "finished": data.get("finished", False),
+        "instruction": round_data.get("instruction", ""),
+        "target_color": round_data.get("target_color"),
+        "target_shape": round_data.get("target_shape"),
+        "display_targets": [{"color": c, "shape": s} for c, s in round_data.get("display_targets", [])],
+        "result": {
+            "outcome": outcome,
+            "score": score,
+        } if (game_over or result) else None,
+        "last_instruction_change": data.get("last_instruction_change", 0),
     }
 
 
@@ -552,6 +674,10 @@ class MiniappGameService:
                 )
             if game_type == GAME_TYPE_CHESS:
                 return await self._start_chess(
+                    user_id=user_id, db_row=db_row, difficulty=difficulty
+                )
+            if game_type == GAME_TYPE_FOCUS_RUSH:
+                return await self._start_focus_rush(
                     user_id=user_id, db_row=db_row, difficulty=difficulty
                 )
             config = _config_for(difficulty)
@@ -971,25 +1097,69 @@ class MiniappGameService:
         await self.session.flush()
         return _chess_public_view(state, initial_state)
 
-    async def _start_reflex(self, *, user_id, db_row, difficulty: str) -> dict:
-        try:
-            config = reflex.REFLEX_DIFFICULTIES[difficulty]
-        except KeyError:
-            raise ValueError(
-                f"difficulty must be one of {sorted(reflex.REFLEX_DIFFICULTIES)}"
-            ) from None
-        # Reaction timing is measured client-side; the server stores no
-        # secret. `secret` is NOT NULL so it holds 0 (unused); per-round
-        # times arrive once via finish_reflex and are validated there.
+    async def _start_focus_rush(self, *, user_id, db_row, difficulty: str) -> dict:
+        # Initialize a new Focus Rush session at the given difficulty level.
+        # The state row carries the full game state in `guesses` JSONB.
         state = await self.states.create(
             user_id=user_id,
             session_id=db_row.id,
-            game_type=GAME_TYPE_REFLEX_RUSH,
+            game_type=GAME_TYPE_FOCUS_RUSH,
             difficulty=difficulty,
-            secret=0,
-            max_attempts=config.rounds,
+            secret=0,  # unused; game state in guesses
+            max_attempts=1,  # unused; managed by round logic
         )
-        return _reflex_public_view(state)
+        # Set up the initial round
+        from brainrush.game.focus_rush import (
+            _new_round,
+            FOCUS_DIFFICULTIES,
+            difficulty_id,
+        )
+        cfg = FOCUS_DIFFICULTIES[difficulty]
+        initial_round = _new_round(int(difficulty.split("_")[1]), 0)
+        state.guesses = {
+            "game": GAME_TYPE_FOCUS_RUSH,
+            "difficulty": difficulty,
+            "level": int(difficulty.split("_")[1]),
+            "time_remaining": 60_000,  # 60 seconds in ms
+            "lives": 3,
+            "score": 0,
+            "combo": 0,
+            "highest_round": 0,
+            "accuracy_correct": 0,
+            "accuracy_total": 0,
+            "best_combo": 0,
+            "rounds_completed": 0,
+            "game_over": False,
+            "finished": False,
+            "current_round": asdict(initial_round),
+            "last_instruction_change": 0,
+        }
+        await self.session.flush()
+        return {
+            "session_id": str(state.session_id),
+            "game_type": GAME_TYPE_FOCUS_RUSH,
+            "difficulty": difficulty,
+            "level": int(difficulty.split("_")[1]),
+            "time_remaining": 60,
+            "lives": 3,
+            "score": 0,
+            "combo": 0,
+            "highest_round": 0,
+            "accuracy_percent": 0,
+            "best_combo": 0,
+            "rounds_completed": 0,
+            "current_round": {
+                "instruction": initial_round.instruction,
+                "target_color": initial_round.target_color,
+                "target_shape": initial_round.target_shape,
+                "display_targets": [
+                    {"color": c, "shape": s} for c, s in initial_round.display_targets
+                ],
+                "round_number": 1,
+            },
+            "game_over": False,
+            "finished": False,
+        }
 
     async def finish_reflex(
         self,
@@ -1111,6 +1281,132 @@ class MiniappGameService:
             state.guesses = [*guesses, {"id": client_guess_id, "value": value}]
             await self.session.flush()
             return _public_view(state, state.guesses)
+
+    async def focus_tap(
+        self,
+        *,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID,
+        color: str,
+        shape: str,
+        client_move_id: str,
+    ) -> dict:
+        """Submit one Focus Rush tap.
+
+        Idempotent per client_move_id: a repeated id returns the current public view without consuming an attempt or awarding points.
+        Server validates the tap against the current round instruction and updates lives/score accordingly.
+        """
+        if not isinstance(client_move_id, str) or not client_move_id.strip():
+            raise ValueError("client_move_id must be a non-empty string")
+        async with self.session.begin():
+            state = await self.states.get_for_update(session_id=session_id)
+            if state is None or state.user_id != user_id:
+                return await self._replay_or_missing(session_id, user_id)
+            if state.game_type != GAME_TYPE_FOCUS_RUSH:
+                raise ValueError("this game uses its own tap endpoint")
+            data = dict(state.guesses or {})
+            if data.get("game") != GAME_TYPE_FOCUS_RUSH:
+                raise ValueError("stored focus rush state is invalid")
+            # Check if game is already over
+            if data.get("game_over", False):
+                return self._focus_rush_public_view(state, data)
+            # Parse current round info
+            round_data = data.get("current_round", {})
+            target_color = round_data.get("target_color")
+            target_shape = round_data.get("target_shape")
+            # Determine if this tap is correct
+            is_correct = False
+            if color == target_color and shape == target_shape:
+                is_correct = True
+            # Apply result
+            if is_correct:
+                # Correct tap: +10 points, combo increment
+                score = data.get("score", 0)
+                combo = data.get("combo", 0) + 1
+                accuracy_correct = data.get("accuracy_correct", 0) + 1
+                accuracy_total = data.get("accuracy_total", 0) + 1
+                new_score = score + 10
+                # Check combo threshold for level up
+                cfg = FOCUS_DIFFICULTIES.get(data.get("difficulty", "level_1"), FOCUS_DIFFICULTIES["level_1"])
+                combo_threshold = cfg["combo_threshold"]
+                new_level = data.get("level", 1)
+                new_round = None
+                if combo >= combo_threshold and new_level < 6:
+                    new_level = new_level + 1
+                    from brainrush.game.focus_rush import _new_round
+                    new_round = _new_round(new_level, 0)
+                data["score"] = new_score
+                data["combo"] = combo
+                data["accuracy_correct"] = accuracy_correct
+                data["accuracy_total"] = accuracy_total
+                data["best_combo"] = max(data.get("best_combo", 0), combo)
+                if new_round is not None:
+                    from dataclasses import asdict
+                    data["current_round"] = asdict(new_round)
+                    data["last_instruction_change"] = data.get("last_instruction_change", 0)
+                    data["round_ms"] = cfg["round_ms"]
+                result = {
+                    "is_correct": True,
+                    "score": new_score,
+                    "combo": combo,
+                    "accuracy_percent": round(accuracy_correct / accuracy_total * 100, 1) if accuracy_total > 0 else 0,
+                    "new_level": new_level,
+                    "instruction": data["current_round"].get("instruction"),
+                    "target_color": data["current_round"].get("target_color"),
+                    "target_shape": data["current_round"].get("target_shape"),
+                    "display_targets": [{"color": c, "shape": s} for c, s in data["current_round"].get("display_targets", [])],
+                }
+            else:
+                # Incorrect tap: lose one life
+                lives = data.get("lives", 3) - 1
+                accuracy_total = data.get("accuracy_total", 0) + 1
+                accuracy_correct = data.get("accuracy_correct", 0)
+                new_score = data.get("score", 0)  # no points added
+                data["lives"] = lives
+                data["accuracy_total"] = accuracy_total
+                if lives <= 0:
+                    data["game_over"] = True
+                    # Game over - record result
+                    moment = utcnow()
+                    session_row = await self.sessions.finish(
+                        session_id=state.session_id,
+                        status="completed",
+                        score=data.get("score", 0),
+                        ended_at=moment,
+                        duration_seconds=None,
+                    )
+                    result_row = await self.results.record(
+                        session_id=state.session_id,
+                        score=data.get("score", 0),
+                        outcome="loss",
+                        xp_earned=0,
+                        metadata={"game": GAME_TYPE_FOCUS_RUSH, "difficulty": data.get("difficulty")},
+                    )
+                    profile = await self.profiles.record_game(
+                        user_id=state.user_id,
+                        xp_earned=0,
+                        won=False,
+                        new_level=None,
+                    )
+                    await self.profiles.set_level(
+                        user_id=state.user_id, level=level_for_xp(profile.total_xp)
+                    )
+                    await self.activities.add_play(
+                        user_id=state.user_id, day=moment.date(), xp_earned=0
+                    )
+                    await self.states.delete(state)
+                    return self._focus_rush_public_view(state, data, game_over=True, outcome="loss", score=data.get("score", 0))
+                else:
+                    result = {
+                        "is_correct": False,
+                        "lives": lives,
+                        "score": new_score,
+                        "combo": combo,
+                        "accuracy_percent": round(accuracy_correct / accuracy_total * 100, 1) if accuracy_total > 0 else 0,
+                    }
+            state.guesses = data
+            await self.session.flush()
+            return self._focus_rush_public_view(state, data, result=result)
 
     async def _complete(self, state, guesses, value, client_guess_id, *, won, config):
         from brainrush.services import utcnow as _utcnow
