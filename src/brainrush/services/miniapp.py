@@ -1098,6 +1098,13 @@ class MiniappGameService:
         return _chess_public_view(state, initial_state)
 
     async def _start_focus_rush(self, *, user_id, db_row, difficulty: str) -> dict:
+        # Map easy/medium/hard to level_1/level_3/level_6
+        difficulty_map = {
+            "easy": "level_1",
+            "medium": "level_3",
+            "hard": "level_6",
+        }
+        difficulty = difficulty_map.get(difficulty, difficulty)
         # Initialize a new Focus Rush session at the given difficulty level.
         # The state row carries the full game state in `guesses` JSONB.
         state = await self.states.create(
