@@ -1124,7 +1124,7 @@ class MiniappGameService:
             _new_round,
             FOCUS_DIFFICULTIES,
         )
-        cfg = FOCUS_DIFFICULTIES[level]
+        cfg = FOCUS_DIFFICULTIES[f"level_{level}"]
         initial_round = _new_round(level, 0)
         state.guesses = {
             "game": GAME_TYPE_FOCUS_RUSH,
