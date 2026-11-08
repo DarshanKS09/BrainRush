@@ -96,6 +96,15 @@ function WordPuzzleIcon({ className }: IconProps) {
   );
 }
 
+function FocusRushIcon({ className }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="8"/>
+      <path d="M9 9l6 6M15 9l-6 6"/>
+    </svg>
+  );
+}
+
 const GAME_ICONS: Record<string, React.ComponentType<IconProps>> = {
   number_guessing: NumberGuessingIcon,
   color_sequence: ColorSequenceIcon,
@@ -106,6 +115,7 @@ const GAME_ICONS: Record<string, React.ComponentType<IconProps>> = {
   reaction_test: ReactionTestIcon,
   math_challenge: MathChallengeIcon,
   word_puzzle: WordPuzzleIcon,
+  focus_rush: FocusRushIcon,
 };
 
 function DefaultIcon({ className }: IconProps) {

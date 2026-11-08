@@ -39,17 +39,10 @@ export function difficultySub(
     return `Stop on the target`;
   }
   if (gameId === 'focus_rush') {
-    // Display Easy/Medium/Hard or Level 1/3/6 based on difficulty ID
+    // Display Easy/Medium/Hard only (level_1-6 mapping removed)
     if (d.id === 'easy') return 'Easy';
     if (d.id === 'medium') return 'Medium';
     if (d.id === 'hard') return 'Hard';
-    if (d.id === 'level_1') return 'Level 1';
-    if (d.id === 'level_3') return 'Level 3';
-    if (d.id === 'level_6') return 'Level 6';
-    if (d.id.startsWith('level_')) {
-      const num = d.id.split('_')[1];
-      return 'Level ' + num;
-    }
     return 'Level ' + d.id;
   }
   if (gameId === 'maze_race') {

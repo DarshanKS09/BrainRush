@@ -239,18 +239,18 @@ CATALOG = [
         "difficulties": [
             {"id": did} for did in chess_game.DIFFICULTIES
         ],
-    },
-    {
+    },    {
         "id": "focus_rush",
         "title": "Focus Rush",
         "description": "Tap only the shapes matching the current instruction while ignoring all distractors. 60-second attention challenge.",
         "playable": True,
         "difficulties": [
-            {"id": did} for did in focus_game.FOCUS_DIFFICULTIES.keys()
+            {"id": "easy", "max_attempts": 999},
+            {"id": "medium", "max_attempts": 999},
+            {"id": "hard", "max_attempts": 999},
         ],
     },
-    {
-        "id": "memory_match",
+    {"id": "memory_match",
         "title": "Memory Match",
         "description": "Flip cards and match every pair.",
         "playable": False,
@@ -449,13 +449,15 @@ def _focus_rush_public_view(state, data: dict, *, result: dict | None = None, ga
     board locally based on the current round instruction, target color/shape,
     and remaining lives/score/combo.
     """
-    cfg = FOCUS_DIFFICULTIES.get(data.get("difficulty", "level_1"), FOCUS_DIFFICULTIES["level_1"])
+    # Map level number back to difficulty id for FOCUS_DIFFICULTIES lookup
+    difficulty = data.get("difficulty", "easy")
     level = data.get("level", 1)
+    cfg = FOCUS_DIFFICULTIES.get(difficulty, FOCUS_DIFFICULTIES["easy"])
     round_data = data.get("current_round", {})
     return {
         "session_id": str(state.session_id),
         "game_type": GAME_TYPE_FOCUS_RUSH,
-        "difficulty": data.get("difficulty", "level_1"),
+        "difficulty": difficulty,
         "level": level,
         "time_remaining": data.get("time_remaining", 60_000) // 1000,
         "lives": data.get("lives", 3),
@@ -636,6 +638,11 @@ class MiniappGameService:
             if difficulty not in chess_game.DIFFICULTIES:
                 raise ValueError(
                     f"difficulty must be one of {sorted(chess_game.DIFFICULTIES)}"
+                )
+        elif game_type == GAME_TYPE_FOCUS_RUSH:
+            if difficulty not in ["easy", "medium", "hard"]:
+                raise ValueError(
+                    f"difficulty must be one of ['easy', 'medium', 'hard']"
                 )
         else:
             _config_for(difficulty)  # fail fast, before any DB work
@@ -1098,20 +1105,17 @@ class MiniappGameService:
         return _chess_public_view(state, initial_state)
 
     async def _start_focus_rush(self, *, user_id, db_row, difficulty: str) -> dict:
-        # Map easy/medium/hard to level_1/level_3/level_6
-        difficulty_map = {
-            "easy": "level_1",
-            "medium": "level_3",
-            "hard": "level_6",
-        }
-        difficulty = difficulty_map.get(difficulty, difficulty)
+        # difficulty is already easy/medium/hard from the caller (start_game validates it)
+        # Map to level numbers: easy→1, medium→3, hard→6
+        level_map = {"easy": 1, "medium": 3, "hard": 6}
+        level = level_map.get(difficulty, 1)
         # Initialize a new Focus Rush session at the given difficulty level.
         # The state row carries the full game state in `guesses` JSONB.
         state = await self.states.create(
             user_id=user_id,
             session_id=db_row.id,
             game_type=GAME_TYPE_FOCUS_RUSH,
-            difficulty=difficulty,
+            difficulty=difficulty,  # store easy/medium/hard directly
             secret=0,  # unused; game state in guesses
             max_attempts=1,  # unused; managed by round logic
         )
@@ -1119,14 +1123,13 @@ class MiniappGameService:
         from brainrush.game.focus_rush import (
             _new_round,
             FOCUS_DIFFICULTIES,
-            difficulty_id,
         )
         cfg = FOCUS_DIFFICULTIES[difficulty]
-        initial_round = _new_round(int(difficulty.split("_")[1]), 0)
+        initial_round = _new_round(level, 0)
         state.guesses = {
             "game": GAME_TYPE_FOCUS_RUSH,
             "difficulty": difficulty,
-            "level": int(difficulty.split("_")[1]),
+            "level": level,
             "time_remaining": 60_000,  # 60 seconds in ms
             "lives": 3,
             "score": 0,

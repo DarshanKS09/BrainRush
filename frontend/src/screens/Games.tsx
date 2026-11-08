@@ -36,7 +36,7 @@ export function GamesScreen({
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<GameInfo | null>(null);
-  const [difficulty, setDifficulty] = useState('medium');
+  const [difficulty, setDifficulty] = useState('easy');
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState('');
 
@@ -146,9 +146,18 @@ function DifficultyChips({
   difficulty: string;
   setDifficulty: (d: string) => void;
 }) {
+  // For Focus Rush, only show Easy/Medium/Hard (ignore level_1-6 from catalog)
+  const focusRush = game.id === 'focus_rush';
+  const difficulties = focusRush
+    ? [
+        { id: 'easy', max_attempts: 999 },
+        { id: 'medium', max_attempts: 999 },
+        { id: 'hard', max_attempts: 999 },
+      ]
+    : game.difficulties;
   return (
     <div className="mt-2 grid grid-cols-3 gap-1.5">
-      {game.difficulties.map((d) => {
+      {difficulties.map((d) => {
         const active = difficulty === d.id;
         return (
           <button
@@ -218,6 +227,7 @@ function GameDetailsPanel({
                 reaction_test: '🎯',
                 math_challenge: '➗',
                 word_puzzle: '🔤',
+                focus_rush: '🎯',
               } as Record<string, string>)[game.id] ?? '🎲'}
             </span>
           </div>

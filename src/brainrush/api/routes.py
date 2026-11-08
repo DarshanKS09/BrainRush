@@ -204,14 +204,27 @@ async def games() -> dict:
             }
         elif entry["id"] == "focus_rush":
             item["xp_rules"] = {
-                did: {
+        "easy": {
                     "base_xp": 10,
                     "accuracy_bonus": 5,
                     "combo_bonus": 3,
                     "round_bonus": 2,
                     "difficulty_multiplier": 1.0,
-                }
-                for did in focus_game.FOCUS_DIFFICULTIES.keys()
+                },
+                "medium": {
+                    "base_xp": 10,
+                    "accuracy_bonus": 5,
+                    "combo_bonus": 3,
+                    "round_bonus": 2,
+                    "difficulty_multiplier": 1.2,
+                },
+                "hard": {
+                    "base_xp": 10,
+                    "accuracy_bonus": 5,
+                    "combo_bonus": 3,
+                    "round_bonus": 2,
+                    "difficulty_multiplier": 1.4,
+                },
             }
         catalog.append(item)
     return {"games": catalog}
