@@ -449,10 +449,10 @@ def _focus_rush_public_view(state, data: dict, *, result: dict | None = None, ga
     board locally based on the current round instruction, target color/shape,
     and remaining lives/score/combo.
     """
-    # Map level number back to difficulty id for FOCUS_DIFFICULTIES lookup
-    difficulty = data.get("difficulty", "easy")
+    # Use level number to look up FOCUS_DIFFICULTIES config
+    # difficulty is already easy/medium/hard stored in state; convert to level number
     level = data.get("level", 1)
-    cfg = FOCUS_DIFFICULTIES.get(difficulty, FOCUS_DIFFICULTIES["easy"])
+    cfg = FOCUS_DIFFICULTIES[f"level_{level}"]
     round_data = data.get("current_round", {})
     return {
         "session_id": str(state.session_id),
@@ -1124,7 +1124,7 @@ class MiniappGameService:
             _new_round,
             FOCUS_DIFFICULTIES,
         )
-        cfg = FOCUS_DIFFICULTIES[difficulty]
+        cfg = FOCUS_DIFFICULTIES[level]
         initial_round = _new_round(level, 0)
         state.guesses = {
             "game": GAME_TYPE_FOCUS_RUSH,

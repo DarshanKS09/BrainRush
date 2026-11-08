@@ -495,7 +495,11 @@ def _new_round(level: int, now_ms: int) -> FocusRoundState:
 
 def _check_level_progression(state: FocusSessionState) -> None:
     """Check if the player should advance to a harder level."""
-    cfg = FOCUS_DIFFICULTIES[state.difficulty]
+    # Convert easy/medium/hard difficulty to level number for FOCUS_DIFFICULTIES lookup
+    difficulty = state.difficulty
+    level_map = {"easy": 1, "medium": 3, "hard": 6}
+    level = level_map.get(difficulty, 1)
+    cfg = FOCUS_DIFFICULTIES[f"level_{level}"]
 
     # Advance level every few rounds based on performance
     if state.rounds_completed >= 5 and state.level < 6:
