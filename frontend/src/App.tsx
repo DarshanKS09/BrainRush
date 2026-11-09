@@ -380,10 +380,10 @@ export default function App() {
           <FocusPlayScreen
             ctx={ctx}
             sessionId={route.sessionId}
-            matchId={route.matchId}
-            onBackToMatch={() => setRoute({ name: 'match', matchId: route.matchId })}
+            _matchId={route.matchId}
+            _onBackToMatch={() => setRoute({ name: 'match', matchId: route.matchId })}
             onExit={() => setRoute({ name: 'match', matchId: route.matchId })}
-            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'focus_rush', sessionId })}
+            _onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'focus_rush', sessionId })}
           />
         )}
         {route.name === 'play' && route.gameId === 'color_sequence' && (
@@ -440,9 +440,10 @@ export default function App() {
         {route.name === 'play' && route.gameId === 'focus_rush' && (
           <FocusPlayScreen
             ctx={ctx}
+            _onBackToMatch={() => setRoute({ name: "games" })}
             sessionId={route.sessionId}
             onExit={() => setRoute({ name: 'games' })}
-            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'focus_rush', sessionId })}
+            _onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'focus_rush', sessionId })}
           />
         )}
         {route.name === 'leaderboard' && <LeaderboardScreen ctx={ctx} />}
