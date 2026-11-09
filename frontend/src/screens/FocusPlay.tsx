@@ -141,8 +141,17 @@ export default function FocusPlayScreen({
       if (!current || current.finished || busy || raw === '') return;
       setBusy(true);
       try {
-        const next = await api.guess(ctx.initData, sessionId, Number(raw), 'client-1');
-        setState(next);
+        if (current.game_type === 'focus_rush') {
+          // For Focus Rush, submit a tap on the current target
+          const target_color = current.target_color || 'blue';
+          const target_shape = current.target_shape || 'circle';
+          const next = await api.focus_tap(ctx.initData, sessionId, target_color, target_shape, 'client-1');
+          setState(next);
+        } else {
+          // For other games, use guess
+          const next = await api.guess(ctx.initData, sessionId, Number(raw), 'client-1');
+          setState(next);
+        }
       } catch (e) {
         /* ignore guess error */
       } finally {

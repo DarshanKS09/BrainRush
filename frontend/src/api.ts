@@ -503,6 +503,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ value, client_guess_id: clientGuessId }),
     }),
+  focus_tap: (initData: string, sessionId: string, color: string, shape: string, clientMoveId: string) =>
+    request<GameState>(`/api/sessions/${sessionId}/focus-tap`, initData, {
+      method: 'POST',
+      body: JSON.stringify({ color, shape, client_move_id: clientMoveId }),
+    }),
   move: (initData: string, sessionId: string, color: number, clientMoveId: string) =>
     request<ColorState>(`/api/sessions/${sessionId}/move`, initData, {
       method: 'POST',
