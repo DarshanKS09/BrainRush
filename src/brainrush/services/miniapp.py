@@ -467,7 +467,8 @@ def _focus_rush_public_view(state, data: dict, *, result: dict | None = None, ga
     and remaining lives/score/combo.
     """
     # Use level number to look up FOCUS_DIFFICULTIES config
-    # difficulty is already easy/medium/hard stored in state; convert to level number
+    # difficulty is already easy/medium/hard stored in guesses; extract from data
+    difficulty = data.get("difficulty", "easy")
     level = data.get("level", 1)
     cfg = FOCUS_DIFFICULTIES[f"level_{level}"]
     round_data = data.get("current_round", {})
@@ -533,6 +534,9 @@ def _active_view(state, service) -> dict:
     if state.game_type == GAME_TYPE_CHESS:
         data = dict(state.guesses or {})
         return _chess_public_view(state, data)
+    if state.game_type == GAME_TYPE_FOCUS_RUSH:
+        data = dict(state.guesses or {})
+        return _focus_rush_public_view(state, data)
     return _public_view(state, list(state.guesses or []))
 
 
