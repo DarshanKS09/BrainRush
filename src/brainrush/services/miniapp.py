@@ -291,8 +291,28 @@ def _hint(value: int, secret: int) -> str:
     return "high" if value > secret else "low"
 
 
-def _public_view(state, guesses: list[dict]) -> dict:
+def _public_view(state, guesses: list | dict) -> dict:
+    # Normalize: if guesses is a single dict (Focus Rush game state),
+    # wrap it in a list so we can iterate. If it's already a list (Number Guessing),
+    # use as-is.
+    if isinstance(guesses, dict):
+        guesses = [guesses]
     used = len(guesses)
+
+    # Build the guesses list, handling both Focus Rush dict format
+    # and Number Guessing list-of-dicts format
+    rendered_guesses = []
+    for g in guesses:
+        if isinstance(g, dict) and "value" in g:
+            # Number Guessing format: dict with .value key
+            value = g["value"]
+            hint = _hint(value, state.secret)
+        else:
+            # Focus Rush format: dict without .value key; store as-is
+            value = g
+            hint = ""
+        rendered_guesses.append({"value": value, "hint": hint})
+
     return {
         "session_id": str(state.session_id),
         "game_type": state.game_type,
@@ -300,13 +320,7 @@ def _public_view(state, guesses: list[dict]) -> dict:
         "max_attempts": state.max_attempts,
         "attempts_used": used,
         "attempts_left": max(0, state.max_attempts - used),
-        "guesses": [
-            {
-                "value": g["value"] if isinstance(g, dict) else int(g),
-                "hint": _hint(g["value"] if isinstance(g, dict) else int(g), state.secret),
-            }
-            for g in guesses
-        ],
+        "guesses": rendered_guesses,
         "status": "started",
         "finished": False,
         "result": None,
