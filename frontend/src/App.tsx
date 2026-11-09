@@ -9,6 +9,7 @@ import { ColorPlayScreen } from './screens/ColorPlay';
 import { ReflexPlayScreen } from './screens/ReflexPlay';
 import { PerfectPlayScreen } from './screens/PerfectPlay';
 import { MazePlayScreen } from './screens/MazePlay';
+import FocusPlayScreen from './screens/FocusPlay';
 import { ChessPlayScreen } from './screens/ChessPlay';
 import { LeaderboardScreen } from './screens/Leaderboard';
 import { ProfileScreen } from './screens/Profile';
@@ -356,7 +357,7 @@ export default function App() {
             onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'maze_race', sessionId })}
           />
         )}
-        {route.name === 'play-match' && route.gameId !== 'color_sequence' && route.gameId !== 'reflex_rush' && route.gameId !== 'perfect_second' && route.gameId !== 'maze_race' && route.gameId !== 'chess' && (
+        {route.name === 'play-match' && route.gameId !== 'color_sequence' && route.gameId !== 'reflex_rush' && route.gameId !== 'perfect_second' && route.gameId !== 'maze_race' && route.gameId !== 'chess' && route.gameId !== 'focus_rush' && (
           <PlayScreen
             ctx={ctx}
             sessionId={route.sessionId}
@@ -373,6 +374,16 @@ export default function App() {
             sessionId={route.sessionId}
             onBackToMatch={() => setRoute({ name: 'match', matchId: route.matchId })}
             onExit={() => setRoute({ name: 'match', matchId: route.matchId })}
+          />
+        )}
+        {route.name === 'play-match' && route.gameId === 'focus_rush' && (
+          <FocusPlayScreen
+            ctx={ctx}
+            sessionId={route.sessionId}
+            matchId={route.matchId}
+            onBackToMatch={() => setRoute({ name: 'match', matchId: route.matchId })}
+            onExit={() => setRoute({ name: 'match', matchId: route.matchId })}
+            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'focus_rush', sessionId })}
           />
         )}
         {route.name === 'play' && route.gameId === 'color_sequence' && (
@@ -410,7 +421,7 @@ export default function App() {
             onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'maze_race', sessionId })}
           />
         )}
-        {route.name === 'play' && route.gameId !== 'color_sequence' && route.gameId !== 'reflex_rush' && route.gameId !== 'perfect_second' && route.gameId !== 'maze_race' && route.gameId !== 'chess' && (
+        {route.name === 'play' && route.gameId !== 'color_sequence' && route.gameId !== 'reflex_rush' && route.gameId !== 'perfect_second' && route.gameId !== 'maze_race' && route.gameId !== 'chess' && route.gameId !== 'focus_rush' && (
           <PlayScreen
             ctx={ctx}
             sessionId={route.sessionId}
@@ -424,6 +435,14 @@ export default function App() {
             ctx={ctx}
             sessionId={route.sessionId}
             onExit={() => setRoute({ name: 'games' })}
+          />
+        )}
+        {route.name === 'play' && route.gameId === 'focus_rush' && (
+          <FocusPlayScreen
+            ctx={ctx}
+            sessionId={route.sessionId}
+            onExit={() => setRoute({ name: 'games' })}
+            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'focus_rush', sessionId })}
           />
         )}
         {route.name === 'leaderboard' && <LeaderboardScreen ctx={ctx} />}
