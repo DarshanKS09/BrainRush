@@ -301,7 +301,10 @@ def _public_view(state, guesses: list[dict]) -> dict:
         "attempts_used": used,
         "attempts_left": max(0, state.max_attempts - used),
         "guesses": [
-            {"value": g["value"], "hint": _hint(g["value"], state.secret)}
+            {
+                "value": g["value"] if isinstance(g, dict) else int(g),
+                "hint": _hint(g["value"] if isinstance(g, dict) else int(g), state.secret),
+            }
             for g in guesses
         ],
         "status": "started",
