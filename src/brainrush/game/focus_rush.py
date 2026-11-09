@@ -190,7 +190,7 @@ def generate_instruction(
     else:
         random.shuffle(display_targets)
 
-    instruction = f"Tap only {target_color.upper()} {target_shape.upper(s)}."
+    instruction = f"Tap only {target_color.upper()} {target_shape.upper()}S."
 
     return {
         "instruction": instruction,
@@ -398,7 +398,9 @@ def process_tap(
         return {"game_over": state.game_over, "finished": True, "result": state.to_public()}
 
     # Process the tap result
-    life_delta = life_penalty(is_correct, is_missed, cfg)
+    # life_penalty returns positive value for losing life
+    # Pass the actual correctness status: incorrect tap = not is_correct
+    life_delta = life_penalty(not is_correct, is_missed, cfg)
 
     if is_correct:
         # Correct tap: add points
@@ -424,9 +426,9 @@ def process_tap(
                 state.level = min(6, state.level + 1)
                 state.difficulty = difficulty_id(state.level)
 
-    else:
+    if not is_correct:
         # Incorrect tap: lose life
-        state.lives = max(0, state.lives + life_delta)  # life_delta is negative
+        state.lives = max(0, state.lives - life_delta)
 
     # Check if missed (no valid tap in time)
     if is_missed:

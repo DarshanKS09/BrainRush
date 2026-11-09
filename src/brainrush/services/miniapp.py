@@ -1149,7 +1149,7 @@ class MiniappGameService:
             "session_id": str(state.session_id),
             "game_type": GAME_TYPE_FOCUS_RUSH,
             "difficulty": difficulty,
-            "level": int(difficulty.split("_")[1]),
+            "level": level,
             "time_remaining": 60,
             "lives": 3,
             "score": 0,
