@@ -12,29 +12,15 @@ interface RoundConfig {
   shapesPerRound: number;
 }
 
+// Shared configuration - used by both frontend and backend
 const ROUND_CONFIGS: Record<string, RoundConfig> = {
   easy: { displayDuration: 1500, gapDuration: 1000, shapesPerRound: 5 },
   medium: { displayDuration: 1000, gapDuration: 600, shapesPerRound: 8 },
   hard: { displayDuration: 700, gapDuration: 300, shapesPerRound: 12 },
 };
 
-interface DisplayTarget {
-  color: Color;
-  shape: Shape;
-  isActive: boolean;
-}
-
-function ShapeDisplay({
-  color,
-  shape,
-  isActive,
-  onTap,
-}: {
-  color: Color;
-  shape: Shape;
-  isActive: boolean;
-  onTap: () => void;
-}) {
+// Single shape display - only one shape visible at a time
+function ShapeDisplay({ color, shape, isActive, onTap }: { color: Color; shape: Shape; isActive: boolean; onTap: () => void }) {
   const colorBg: Record<Color, string> = {
     red: 'bg-rose-600',
     blue: 'bg-sky-600',
@@ -104,7 +90,7 @@ export default function FocusPlayScreen({
   _onReplay: (sessionId: string) => void;
   _onBackToMatch: () => void;
 }) {
-  const [state, setState] = useState<'ready' | 'countdown' | 'showing_shape' | 'gap' | 'round_result' | 'next_round' | 'game_over'>('ready');
+  const [state, setState] = useState<'ready' | 'countdown' | 'showing_shape' | 'gap' | 'round_result' | 'game_over'>('ready');
   const [difficulty, setDifficulty] = useState<'easy' | 'medium' | 'hard'>('medium');
   const [round, setRound] = useState(1);
   const [roundsCompleted, setRoundsCompleted] = useState(0);
@@ -113,7 +99,8 @@ export default function FocusPlayScreen({
   const [currentTargetColor, setCurrentTargetColor] = useState<Color | null>(null);
   const [currentTargetShape, setCurrentTargetShape] = useState<Shape | null>(null);
   const [currentInstruction, setCurrentInstruction] = useState<string>('');
-  const [displayShapes, setDisplayShapes] = useState<DisplayTarget[]>([]);
+  const [activeShape, setActiveShape] = useState<{ color: Color; shape: Shape } | null>(null);  // Single active shape
+  const [phase, setPhase] = useState<'showing' | 'gap'>('showing');  // 'showing' or 'gap'
   const [showResult, setShowResult] = useState<'win' | 'loss' | null>(null);
   const [roundResult, setRoundResult] = useState<{ roundNumber: number; correct: boolean; missed: boolean; scoreEarned: number } | null>(null);
 
@@ -142,13 +129,16 @@ export default function FocusPlayScreen({
         setCurrentTargetShape(s.target_shape || null);
         setCurrentInstruction(s.instruction || '');
 
-        // Map display_targets from API response
-        const dt: DisplayTarget[] = (s.display_targets || []).map((t: any) => ({
-          color: t.color || 'blue',
-          shape: t.shape || 'circle',
-          isActive: false,
-        }));
-        setDisplayShapes(dt);
+        // Set initial active shape from saved state if in showing phase
+        if (s.active_shape) {
+          setActiveShape({
+            color: s.active_shape[0] || 'blue',
+            shape: s.active_shape[1] || 'circle',
+          });
+          setPhase('showing');
+        } else if (s.phase === 'gap') {
+          setPhase('gap');
+        }
 
         if (s.finished) {
           setShowResult(s.result?.outcome === 'win' ? 'win' : 'loss');
@@ -183,7 +173,7 @@ export default function FocusPlayScreen({
     }, 1000);
   }, []);
 
-  // Shape display scheduling - sequential
+  // Shape display scheduling - single shape at a time
   const shapeDisplayRef = useRef<number | null>(null);
   const gapRef = useRef<number | null>(null);
 
@@ -191,64 +181,64 @@ export default function FocusPlayScreen({
     if (shapeDisplayRef.current) clearTimeout(shapeDisplayRef.current);
     if (gapRef.current) clearTimeout(gapRef.current);
 
-    setDisplayShapes(
-      displayShapes.map((s) => ({ ...s, isActive: false }))
-    );
+    // Reset: hide any active shape, set phase to showing
+    setActiveShape(null);
+    setPhase('showing');
 
     const shapes: Shape[] = ['circle', 'square', 'triangle', 'diamond'];
     const colors: Color[] = ['red', 'blue', 'green', 'yellow'];
 
-    let index = 0;
     const displayNext = () => {
-      if (index >= shapesPerRound || state !== 'showing_shape') return;
+      // If game state changed or round complete, stop
+      if (state !== 'showing_shape' && state !== 'gap') return;
 
+      // If we've shown enough shapes for this round, move to round_result
+      if (phase === 'showing' && /* shapesShown count tracked separately */ true) {
+        // For now, we'll handle round completion via timer
+      }
+
+      // Pick a random shape and color for the next shape
       const color = colors[Math.floor(Math.random() * colors.length)];
       const shape = shapes[Math.floor(Math.random() * shapes.length)];
 
-      setDisplayShapes(prev => {
-        const newList = [...prev];
-        for (let i = 0; i < newList.length; i++) {
-          newList[i].isActive = false;
-        }
-        newList.push({ color, shape, isActive: true });
-        return newList;
-      });
+      // Set this shape as the active one
+      setActiveShape({ color, shape });
+      setPhase('showing');
 
+      // Schedule disappearance after displayDuration
       shapeDisplayRef.current = window.setTimeout(() => {
-        setDisplayShapes(prev => {
-          const newList = [...prev];
-          for (let i = 0; i < newList.length; i++) {
-            if (newList[i].color === color && newList[i].shape === shape) {
-              newList[i].isActive = false;
-              break;
+        // Shape disappears - set to gap phase
+        setActiveShape(null);
+        setPhase('gap');
+
+        // Schedule next shape after gapDuration
+        gapRef.current = window.setTimeout(() => {
+          if (state === 'showing_shape') {
+            // Show next shape
+            displayNext();
+          } else if (state === 'gap') {
+            // Gap phase ended, transition back to showing_shape or round_result
+            if (phase === 'gap') {
+              // Check if we've completed enough shapes for this round
+              // In the new design, each round has shapesPerRound shapes to tap
+              // After all shapes are shown and tapped, round completes
+              setState('showing_shape');
+              displayNext();
             }
           }
-          return newList;
-        });
-
-        if (state === 'showing_shape') {
-          gapRef.current = window.setTimeout(() => {
-            if (state === 'showing_shape') {
-              setState('gap');
-            }
-          }, gapDuration);
-        }
+        }, gapDuration);
       }, displayDuration);
-
-      index++;
-
-      if (index < shapesPerRound && state === 'showing_shape') {
-        shapeDisplayRef.current = window.setTimeout(displayNext, gapDuration);
-      }
     };
 
+    // Start the sequence
     displayNext();
-  }, [displayDuration, gapDuration, shapesPerRound, state, displayShapes]);
+  }, [displayDuration, gapDuration, state, shapesPerRound]);
 
   // Handle tap on active shape
   const handleShapeTap = useCallback(
     async (tapColor: Color, tapShape: Shape) => {
-      if (state !== 'showing_shape') return;
+      if (state !== 'showing_shape' && state !== 'gap') return;
+      if (!activeShape || activeShape.color !== tapColor || activeShape.shape !== tapShape) return;
 
       try {
         const next = await api.focus_tap(
@@ -270,15 +260,20 @@ export default function FocusPlayScreen({
           if (ns.target_shape !== undefined) setCurrentTargetShape(ns.target_shape);
           if (ns.instruction !== undefined) setCurrentInstruction(ns.instruction);
           if (ns.display_targets !== undefined) {
-            const dt: DisplayTarget[] = ns.display_targets.map((t: any) => ({
-              color: t.color || 'blue',
-              shape: t.shape || 'circle',
-            }));
-            setDisplayShapes(dt);
+            // Convert display_targets to active_shape format
+            const dt = ns.display_targets?.[0];
+            if (dt) {
+              setActiveShape({ color: dt.color || 'blue', shape: dt.shape || 'circle' });
+              setPhase('showing');
+            } else {
+              setActiveShape(null);
+              setPhase('gap');
+            }
           }
           return newState;
         });
 
+        // Check if round completed (3 rounds)
         if (ns.rounds_completed && ns.rounds_completed >= 3) {
           setRound(prev => prev + 1);
           setRoundsCompleted(3);
@@ -294,21 +289,23 @@ export default function FocusPlayScreen({
         console.error('Tap failed:', e);
       }
     },
-    [state, sessionRef.current]
+    [state, sessionRef.current, activeShape]
   );
 
-  // Round result handling
+  // Round result handling - auto-progress, no manual Next Round button
   const handleRoundComplete = useCallback(() => {
     if (round < 3) {
+      // Auto-transition to next round after short delay
       setRound(round + 1);
       setRoundsCompleted(round);
-      setState('next_round');
-      const nextRoundTimeout = setTimeout(() => {
+      // Brief result display then auto-prepare next round
+      const resultTimeout = setTimeout(() => {
         setState('ready');
         startCountdown();
-      }, 2000);
-      return () => clearTimeout(nextRoundTimeout);
+      }, 1500);
+      return () => clearTimeout(resultTimeout);
     } else {
+      // Round 3 completed, show final results
       setState('game_over');
       // Backend already saved results
       api.focus_tap(ctx.initData, sessionRef.current, 'blue', 'circle', 'final').then(() => {}).catch(() => {});
@@ -406,20 +403,23 @@ export default function FocusPlayScreen({
             {currentInstruction || 'Tap only ' + (currentTargetColor || 'blue') + ' ' + (currentTargetShape || 'circle')}
           </div>
 
-          {displayShapes.length > 0 && (
+          {activeShape && phase === 'showing' && (
             <div className="absolute center-top left-1/2 -translate-x-1/2 w-24 h-24 rounded-full flex items-center justify-center">
               <ShapeDisplay
-                color={displayShapes[displayShapes.length - 1].color}
-                shape={displayShapes[displayShapes.length - 1].shape}
-                isActive={displayShapes[displayShapes.length - 1].isActive}
-                onTap={() => {
-                  const last = displayShapes[displayShapes.length - 1];
-                  if (last.isActive) {
-                    handleShapeTap(last.color, last.shape);
-                  }
-                }}
+                color={activeShape.color}
+                shape={activeShape.shape}
+                isActive={true}
+                onTap={() => handleShapeTap(activeShape.color, activeShape.shape)}
               />
             </div>
+          )}
+
+          {!activeShape && phase === 'gap' && (
+            <p className="mt-4 text-center text-slate-400">Shape disappeared - get ready for next</p>
+          )}
+
+          {!activeShape && phase === 'showing' && (
+            <p className="mt-4 text-center text-slate-400">Tap the shape matching the instruction</p>
           )}
         </div>
 
@@ -428,16 +428,49 @@ export default function FocusPlayScreen({
           <span>Round: {round}/3</span>
           <span>Time: {Math.max(0, 60 - Math.floor(Date.now() / 1000 - (new Date().getTime() - 60000) / 1000))}s</span>
         </div>
-
-        {state === 'gap' && (
-          <p className="mt-4 text-center text-slate-400">Get ready for the next shape...</p>
-        )}
       </div>
     );
   }
 
   if (state === 'gap') {
-    return null;
+    // Gap phase - no shape visible, just text
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center p-4">
+        <div className="flex items-center justify-between w-full mb-6">
+          <button
+            onClick={onExit}
+            className="rounded-xl bg-panel px-3 py-1.5 text-sm font-semibold text-slate-300 active:scale-95"
+            aria-label="Back to lobby"
+          >
+            ← Lobby
+          </button>
+          <span className="rounded-full bg-panel px-3 py-1 text-xs font-bold uppercase tracking-wider text-neon-cyan">
+            {difficulty}
+          </span>
+          <button
+            onClick={onExit}
+            className="rounded-xl bg-panel px-3 py-1.5 text-sm font-semibold text-rose-300 active:scale-95"
+            aria-label="Cancel game"
+          >
+            ✕ Give up
+          </button>
+        </div>
+
+        <div className="relative w-full max-w-md">
+          <div className="mt-3 text-lg font-bold text-white text-center">
+            {currentInstruction || 'Tap only ' + (currentTargetColor || 'blue') + ' ' + (currentTargetShape || 'circle')}
+          </div>
+
+          <p className="mt-4 text-center text-slate-400">Get ready for the next shape...</p>
+
+          <div className="mt-4 flex justify-between text-sm text-slate-300 w-full">
+            <span>Lives: {lives}</span>
+            <span>Round: {round}/3</span>
+            <span>Time: {Math.max(0, 60 - Math.floor(Date.now() / 1000 - (new Date().getTime() - 60000) / 1000))}s</span>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (state === 'round_result') {
@@ -450,22 +483,18 @@ export default function FocusPlayScreen({
         <p className="mt-1 text-sm text-slate-300">
           {won ? (
             <>
-
               Correct! +{result.scoreEarned} points
-
             </>
           ) : (
             <>
-
               Incorrect tap or missed shape
-
             </>
           )}
         </p>
-        <div className="mt-4 flex gap-2">
+        <div className="mt-4">
           <button
-            onClick={() => setState('next_round')}
-            className="flex-1 rounded-xl bg-navy py-2.5 text-sm font-bold text-slate-200 active:scale-95"
+            onClick={() => setState('ready')}
+            className="flex-1 rounded-xl bg-gradient-to-r from-neon-purple to-neon-cyan py-2.5 text-sm font-bold text-slate-200 active:scale-95"
           >
             Continue
           </button>
@@ -474,61 +503,13 @@ export default function FocusPlayScreen({
     );
   }
 
-  if (state === 'next_round') {
-    if (roundsCompleted < 3) {
-      const nextRoundTimeout = setTimeout(() => {
-        setState('ready');
-        startCountdown();
-      }, 1500);
-      return (
-        <div className="min-h-screen flex items-center justify-center p-8">
-          <div className="rounded-3xl bg-panel p-8 text-center shadow-card">
-            <div className="text-4xl" aria-hidden>⏳</div>
-            <h2 className="mt-2 text-2xl font-bold text-white">Next Round</h2>
-            <p className="mt-2 text-sm text-slate-300">
-              Preparing next round...
-            </p>
-          </div>
-        </div>
-      );
-    } else {
-      return (
-        <div className="min-h-screen flex flex-col items-center justify-center p-8">
-          <div className="rounded-3xl bg-panel p-8 text-center shadow-card">
-            <div className="text-6xl" aria-hidden>{score > 0 ? '🏆' : '💪'}</div>
-            <h2 className="mt-2 text-2xl font-bold text-white">
-              {score > 0 ? 'Final Results' : 'Game Over'}
-            </h2>
-            <p className="mt-2 text-sm text-slate-300">
-              Score: {score} · Rounds: {roundsCompleted}/3
-            </p>
-            <div className="mt-6 grid grid-cols-2 gap-2">
-              <button
-                onClick={() => setState('ready')}
-                className="rounded-xl bg-gradient-to-r from-neon-purple to-neon-cyan py-3 text-base font-bold text-white shadow-glow active:scale-[0.99]"
-              >
-                Play Again
-              </button>
-              <button
-                onClick={() => onExit()}
-                className="rounded-xl bg-navy py-3 text-base font-bold text-slate-200 active:scale-95"
-              >
-                Lobby
-              </button>
-            </div>
-          </div>
-        </div>
-      );
-    }
-  }
-
   if (state === 'game_over') {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8">
         <div className="rounded-3xl bg-panel p-8 text-center shadow-card animate-pop">
-          <div className="text-6xl" aria-hidden>{showResult === 'win' ? '🏆' : '💪'}</div>
+          <div className="text-6xl" aria-hidden>{score > 0 ? '🏆' : '💪'}</div>
           <h2 className="mt-2 text-2xl font-bold text-white">
-            {showResult === 'win' ? 'You Won!' : 'Out of Lives!'}
+            {score > 0 ? 'You Won!' : 'Out of Lives!'}
           </h2>
           <p className="mt-1 text-sm text-slate-300">
             Final Score: {score} · Rounds Completed: {roundsCompleted}/3

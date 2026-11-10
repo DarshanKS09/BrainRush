@@ -261,15 +261,18 @@ def update_combo(
 
 @dataclass
 class FocusRoundState:
-    """State for one round of Focus Rush."""
+    """State for one round of Focus Rush (sequential shape display)."""
 
     instruction: str
     target_color: Color
     target_shape: Shape
-    display_targets: list[TargetSpec]  # list of (color, shape) for UI
-    round_number: int
-    round_start_ms: int  # when this round started
-    instruction_change_ms: int  # when the instruction was last changed
+    active_shape: Optional[TargetSpec] = None  # Currently visible (color, shape), None if gap
+    phase: str = 'showing'  # 'showing', 'gap', 'complete'
+    shapes_shown: int = 0  # how many shapes have been shown this round
+    shapes_per_round: int = 5  # from difficulty config (5/8/12)
+    round_number: int = 1
+    round_start_ms: int = 0  # when this round started
+    instruction_change_ms: int = 0  # when the instruction was last changed
     finished: bool = False
 
     def elapsed_ms(self, now_ms: int) -> int:
@@ -277,6 +280,15 @@ class FocusRoundState:
 
     def instruction_elapsed_ms(self, now_ms: int) -> int:
         return now_ms - self.instruction_change_ms
+
+    def is_showing(self) -> bool:
+        return self.phase == 'showing' and self.active_shape is not None
+
+    def is_gap(self) -> bool:
+        return self.phase == 'gap'
+
+    def is_complete(self) -> bool:
+        return self.phase == 'complete' or self.shapes_shown >= self.shapes_per_round
 
 
 # ---------------------------------------------------------------------------
@@ -479,7 +491,6 @@ def process_tap(
         ),
     }
 
-
 def _new_round(level: int, now_ms: int) -> FocusRoundState:
     """Create a new round with a fresh instruction and target."""
     instruction_data = generate_instruction(level)
@@ -487,8 +498,11 @@ def _new_round(level: int, now_ms: int) -> FocusRoundState:
         instruction=instruction_data["instruction"],
         target_color=instruction_data["target_color"],
         target_shape=instruction_data["target_shape"],
-        display_targets=instruction_data["display_targets"],
-        round_number=1,  # will be incremented by caller
+        active_shape=(instruction_data["target_color"], instruction_data["target_shape"]),
+        phase='showing',
+        shapes_shown=0,
+        shapes_per_round=instruction_data.get("num_targets", 5),
+        round_number=1,
         round_start_ms=now_ms,
         instruction_change_ms=now_ms,
         finished=False,

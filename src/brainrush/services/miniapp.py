@@ -472,6 +472,21 @@ def _focus_rush_public_view(state, data: dict, *, result: dict | None = None, ga
     level = data.get("level", 1)
     cfg = FOCUS_DIFFICULTIES[f"level_{level}"]
     round_data = data.get("current_round", {})
+    # New format: active_shape is a (color, shape) tuple, phase is 'showing' or 'gap'
+    active_shape = round_data.get("active_shape")
+    phase = round_data.get("phase", "showing")
+    # Generate display_targets from active_shape for UI rendering
+    if active_shape and phase == 'showing':
+        display_targets = [{"color": active_shape[0], "shape": active_shape[1]}]
+    else:
+        display_targets = []  # gap phase: no shapes visible
+    # Extract target info from round_data (backward compatibility)
+    target_color = round_data.get("target_color") or (active_shape[0] if active_shape else None)
+    target_shape = round_data.get("target_shape") or (active_shape[1] if active_shape else None)
+    instruction = round_data.get("instruction", "")
+    # Fall back to generating instruction from target if not stored
+    if not instruction and target_color and target_shape:
+        instruction = f"Tap only {target_color.upper()} {target_shape.upper()}S."
     return {
         "session_id": str(state.session_id),
         "game_type": GAME_TYPE_FOCUS_RUSH,
@@ -487,10 +502,10 @@ def _focus_rush_public_view(state, data: dict, *, result: dict | None = None, ga
         "rounds_completed": data.get("rounds_completed", 0),
         "game_over": game_over,
         "finished": data.get("finished", False),
-        "instruction": round_data.get("instruction", ""),
-        "target_color": round_data.get("target_color"),
-        "target_shape": round_data.get("target_shape"),
-        "display_targets": [{"color": c, "shape": s} for c, s in round_data.get("display_targets", [])],
+        "instruction": instruction,
+        "target_color": target_color,
+        "target_shape": target_shape,
+        "display_targets": display_targets,
         "result": {
             "outcome": outcome,
             "score": score,
@@ -1341,14 +1356,18 @@ class MiniappGameService:
             # Check if game is already over
             if data.get("game_over", False):
                 return self._focus_rush_public_view(state, data)
-            # Parse current round info
+            # Parse current round info (new format with active_shape and phase)
             round_data = data.get("current_round", {})
-            target_color = round_data.get("target_color")
-            target_shape = round_data.get("target_shape")
+            active_shape = round_data.get("active_shape")  # (color, shape) or None
+            phase = round_data.get("phase", "showing")  # 'showing' or 'gap'
+            cfg = FOCUS_DIFFICULTIES.get(data.get("difficulty", "level_1"), FOCUS_DIFFICULTIES["level_1"])
             # Determine if this tap is correct
             is_correct = False
-            if color == target_color and shape == target_shape:
-                is_correct = True
+            if active_shape is not None and phase == 'showing':
+                tap_color_match = color == active_shape[0]
+                tap_shape_match = shape == active_shape[1]
+                is_correct = tap_color_match and tap_shape_match
+            # If phase is gap, any tap is incorrect
             # Apply result
             if is_correct:
                 # Correct tap: +10 points, combo increment
@@ -1358,7 +1377,6 @@ class MiniappGameService:
                 accuracy_total = data.get("accuracy_total", 0) + 1
                 new_score = score + 10
                 # Check combo threshold for level up
-                cfg = FOCUS_DIFFICULTIES.get(data.get("difficulty", "level_1"), FOCUS_DIFFICULTIES["level_1"])
                 combo_threshold = cfg["combo_threshold"]
                 new_level = data.get("level", 1)
                 new_round = None
@@ -1373,6 +1391,7 @@ class MiniappGameService:
                 data["best_combo"] = max(data.get("best_combo", 0), combo)
                 if new_round is not None:
                     from dataclasses import asdict
+                    # New round with phase='showing' and active_shape set
                     data["current_round"] = asdict(new_round)
                     data["last_instruction_change"] = data.get("last_instruction_change", 0)
                     data["round_ms"] = cfg["round_ms"]
@@ -1383,18 +1402,36 @@ class MiniappGameService:
                     "accuracy_percent": round(accuracy_correct / accuracy_total * 100, 1) if accuracy_total > 0 else 0,
                     "new_level": new_level,
                     "instruction": data["current_round"].get("instruction"),
-                    "target_color": data["current_round"].get("target_color"),
-                    "target_shape": data["current_round"].get("target_shape"),
-                    "display_targets": [{"color": c, "shape": s} for c, s in data["current_round"].get("display_targets", [])],
+                    "target_color": data["current_round"].get("target_color") or (active_shape[0] if active_shape else None),
+                    "target_shape": data["current_round"].get("target_shape") or (active_shape[1] if active_shape else None),
+                    "display_targets": [{"color": active_shape[0], "shape": active_shape[1]}] if active_shape else [],
                 }
             else:
-                # Incorrect tap: lose one life
-                lives = data.get("lives", 3) - 1
-                accuracy_total = data.get("accuracy_total", 0) + 1
-                accuracy_correct = data.get("accuracy_correct", 0)
-                new_score = data.get("score", 0)  # no points added
+                # Incorrect or untimed tap
+                # Check if it was a missed target (round expired without tap)
+                round_elapsed = data.get("round_start_ms", 0) and (data.get("last_instruction_change", 0) or 0)
+                # Simplified: just check if round duration has elapsed
+                round_start_ms = data.get("round_start_ms", 0)
+                now_ms = int(utcnow().timestamp() * 1000)
+                is_missed = round_start_ms > 0 and (now_ms - round_start_ms) > cfg["round_ms"] and not data.get("round_state", {}).get("finished", False)
+                # Lose life for incorrect tap
+                lives = data.get("lives", 3)
+                # If it was a missed target (no tap in time), penalty is 0.5 life
+                # If it was an incorrect tap on a distractor, penalty is 1 life
+                if is_missed:
+                    lives = max(0, lives - 0.5)
+                    # Record as missed for accuracy tracking
+                    accuracy_total = data.get("accuracy_total", 0) + 1
+                    accuracy_correct = data.get("accuracy_correct", 0)
+                else:
+                    # Incorrect tap on distractor
+                    lives = max(0, lives - 1)
+                    accuracy_total = data.get("accuracy_total", 0) + 1
+                    accuracy_correct = data.get("accuracy_correct", 0)
+                new_score = data.get("score", 0)  # no points added for incorrect
                 data["lives"] = lives
                 data["accuracy_total"] = accuracy_total
+                data["accuracy_correct"] = accuracy_correct
                 if lives <= 0:
                     data["game_over"] = True
                     # Game over - record result
@@ -1432,7 +1469,7 @@ class MiniappGameService:
                         "is_correct": False,
                         "lives": lives,
                         "score": new_score,
-                        "combo": combo,
+                        "combo": data.get("combo", 0),
                         "accuracy_percent": round(accuracy_correct / accuracy_total * 100, 1) if accuracy_total > 0 else 0,
                     }
             state.guesses = data
