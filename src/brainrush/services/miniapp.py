@@ -1180,6 +1180,13 @@ class MiniappGameService:
             "current_round": asdict(initial_round),
             "last_instruction_change": 0,
         }
+        # Generate display_targets from active_shape/phase (new format)
+        active_shape = initial_round.active_shape
+        phase = initial_round.phase
+        if active_shape and phase == 'showing':
+            display_targets = [{"color": active_shape[0], "shape": active_shape[1]}]
+        else:
+            display_targets = []  # gap phase: no shapes visible
         await self.session.flush()
         return {
             "session_id": str(state.session_id),
@@ -1198,13 +1205,11 @@ class MiniappGameService:
                 "instruction": initial_round.instruction,
                 "target_color": initial_round.target_color,
                 "target_shape": initial_round.target_shape,
-                "display_targets": [
-                    {"color": c, "shape": s} for c, s in initial_round.display_targets
-                ],
-                "round_number": 1,
+                "display_targets": display_targets,
+                "round_number": initial_round.round_number,
             },
-            "game_over": False,
-            "finished": False,
+            "game_over": initial_round.finished,
+            "finished": initial_round.finished,
         }
 
     async def finish_reflex(
