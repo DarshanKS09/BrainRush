@@ -95,17 +95,53 @@ def test_tapping_the_target_scores_once():
     assert state["score"] == 11  # never pays twice for one object
 
 
-def test_distractor_tap_costs_no_life_and_no_points():
-    state, rng = _started("easy")
-    # Force a spawn that is certainly not the target.
-    distractor = focus._spawn(state, focus.config_for("easy"), NOW, rng)
+def _forced_distractor(state, rng, at_ms):
+    """Spawn one object that certainly does not match the target."""
+    distractor = focus._spawn(state, focus.config_for(state["difficulty"]), at_ms, rng)
     distractor["is_target"] = False
     distractor["color"] = "red" if state["target"]["color"] != "red" else "blue"
     distractor["shape"] = "square" if state["target"]["shape"] != "square" else "circle"
-    result = focus.tap(state, distractor["id"], NOW + 50, rng)
+    return distractor
+
+
+def test_wrong_tap_costs_exactly_one_life_and_no_points():
+    state, rng = _started("easy")
+    t0 = NOW + focus.WARMUP_MS + 400
+    distractor = _forced_distractor(state, rng, t0)
+    result = focus.tap(state, distractor["id"], t0 + 50, rng)
     assert result["outcome"] == "wrong"
-    assert state["score"] == 0 and state["lives"] == 3
+    assert state["score"] == 0 and state["lives"] == 2
     assert state["wrong_taps"] == 1 and state["combo"] == 0
+
+    # Same object tapped again: processed once, never a second penalty.
+    again = focus.tap(state, distractor["id"], t0 + 80, rng)
+    assert again["outcome"] == "duplicate"
+    assert state["lives"] == 2 and state["wrong_taps"] == 1
+
+
+def test_different_wrong_objects_each_cost_one_life():
+    state, rng = _started("easy")
+    t0 = NOW + focus.WARMUP_MS + 400
+    for step in range(2):
+        distractor = _forced_distractor(state, rng, t0 + step)
+        focus.tap(state, distractor["id"], t0 + step + 10, rng)
+    assert state["lives"] == 1 and state["wrong_taps"] == 2
+    assert state["finished"] is False
+
+
+def test_third_wrong_tap_ends_the_run_immediately():
+    state, rng = _started("easy")
+    t0 = NOW + focus.WARMUP_MS + 400
+    for step in range(3):
+        distractor = _forced_distractor(state, rng, t0 + step)
+        result = focus.tap(state, distractor["id"], t0 + step + 10, rng)
+    assert result["outcome"] == "wrong"
+    assert state["lives"] == 0
+    assert state["finished"] is True and state["game_over"] is True
+    assert state["objects"] == []
+    result = focus.finish(state, t0 + 40)
+    assert result["wrong_taps"] == 3
+    assert result["score"] == 0
 
 
 def test_missed_target_costs_one_life_but_missed_distractor_does_not():
@@ -145,37 +181,55 @@ def test_three_missed_targets_end_the_run():
     assert state["objects"] == []
 
 
-def test_target_change_neutralises_in_flight_objects():
+def test_target_change_clears_old_objects_and_opens_a_transition_window():
     state, rng = _started("easy")
     cfg = focus.config_for("easy")
     t0 = NOW + focus.WARMUP_MS + 400
     old_target = dict(state["target"])
-    # Two objects born under the old instruction.
     state["objects"] = []
-    tapped_one = focus._spawn(state, cfg, t0, rng, force_target=True)
-    falling_one = focus._spawn(state, cfg, t0, rng, force_target=True)
-    tapped_one["fall_ms"] = 10_000
-    falling_one["fall_ms"] = 1_000
-
+    old_obj = focus._spawn(state, cfg, t0, rng, force_target=True)
     state["next_target_change_ms"] = t0 + 1
-    state["next_target_ms"] = t0 + 1
+
     focus.advance(state, t0 + 60, rng)
 
     assert state["target"] != old_target
-    assert tapped_one["stale"] is True and falling_one["stale"] is True
-    # A stale object cannot award points under the new instruction ...
-    score_before = state["score"]
-    result = focus.tap(state, tapped_one["id"], t0 + 70, rng)
-    assert result["outcome"] == "wrong"
-    assert state["score"] == score_before
-    # ... and cannot cost a life when it reaches the bottom.
-    state["objects"] = [falling_one]  # isolate it from later target spawns
-    state["next_spawn_ms"] = NOW + 10**9
-    state["next_target_ms"] = NOW + 10**9
+    assert state["objects"] == []  # old instruction's cards are gone
+    assert focus.is_transitioning(state, t0 + 60) is True
+    assert state["transition_until_ms"] == t0 + 60 + focus.TARGET_TRANSITION_MS
+
+    # An old object id is inert during the hand-over: no points, no penalty.
+    score_before, lives_before = state["score"], state["lives"]
+    result = focus.tap(state, old_obj["id"], t0 + 70, rng)
+    assert result["outcome"] == "transition"
+    assert state["score"] == score_before and state["lives"] == lives_before
+    assert state["wrong_taps"] == 0
+
+    # No shapes may be scheduled inside the popup window.
+    assert state["next_spawn_ms"] > state["transition_until_ms"]
+    assert all(o["spawned_at_ms"] > state["transition_until_ms"] for o in state["objects"])
+
+    # Gameplay resumes after the popup: shapes fall again and the new target
+    # is the only thing that scores.
+    focus.advance(state, state["transition_until_ms"] + 600, rng)
+    assert focus.is_transitioning(state, state["transition_until_ms"] + 600) is False
+    assert state["objects"], "spawning must resume after the transition"
+    assert not any(o["stale"] for o in state["objects"])
+    view = focus.public_view(state, state["transition_until_ms"] + 600, session_id="sid")
+    assert view["transition"]["active"] is False
+    assert view["transition"]["id"] == state["target_changed_ms"]
+    assert view["target"] == state["target"] != old_target
+
+
+def test_transition_pauses_falls_and_misses():
+    state, rng = _started("easy")
+    t0 = NOW + focus.WARMUP_MS + 400
+    state["next_target_change_ms"] = t0 + 1
+    focus.advance(state, t0 + 60, rng)
     lives_before = state["lives"]
-    focus.advance(state, t0 + 1_001, rng)
-    assert state["lives"] == lives_before
-    assert state["missed_targets"] == 0
+    # A long popup window must not resolve falls or charge missed targets.
+    focus.advance(state, t0 + 60 + focus.TARGET_TRANSITION_MS - 100, rng)
+    assert state["lives"] == lives_before and state["missed_targets"] == 0
+    assert all(o["spawned_at_ms"] > t0 + 60 for o in state["objects"])
 
 
 def test_pause_freezes_the_clock_and_resume_shifts_the_timeline():
@@ -193,6 +247,23 @@ def test_pause_freezes_the_clock_and_resume_shifts_the_timeline():
     assert state["paused"] is False
     assert in_flight["spawned_at_ms"] == spawned_at + paused_for
     assert state["paused_total_ms"] == paused_for
+
+
+def test_target_change_id_survives_pause_so_the_popup_is_not_repeated():
+    state, rng = _started("easy")
+    t0 = NOW + focus.WARMUP_MS + 400
+    state["next_target_change_ms"] = t0 + 1
+    focus.advance(state, t0 + 60, rng)
+    change_id = state["target_changed_ms"]
+    until = state["transition_until_ms"]
+
+    focus.pause(state, t0 + 100)
+    focus.resume(state, t0 + 5_100)
+
+    # Same change -> same id (no duplicate popup), but the window itself moves
+    # with the timeline so the popup still gets its full duration.
+    assert state["target_changed_ms"] == change_id
+    assert state["transition_until_ms"] == until + 5_000
 
 
 def test_long_stall_rebases_without_stealing_lives():
@@ -250,6 +321,13 @@ def test_public_view_is_the_render_contract():
         "id", "color", "shape", "x", "spawned_at_ms", "fall_ms", "stale",
     }
     assert view["now_ms"] == NOW
+    assert view["transition"] == {
+        "active": False,
+        "id": 0,
+        "started_at_ms": 0,
+        "until_ms": 0,
+        "target": state["target"],
+    }
 
 
 def test_unknown_difficulty_is_rejected():

@@ -14,15 +14,15 @@ Rules implemented here (all server-authoritative):
   invents one.
 * Tapping a matching object removes it and awards ``hit_points`` plus a combo
   bonus (capped at ``max_combo_bonus``).
-* Tapping a distractor awards nothing, costs no life, and resets the combo.
-  Lives are only lost by letting a *target* fall past the bottom.
+* Tapping a distractor awards nothing but costs one life (wrong-target
+  penalty) and resets the combo.
 * A target that reaches the bottom untapped costs one life and increments the
-  missed-target counter. Three misses end the run.
-* Objects in flight when the target changes are marked ``stale``: they can no
-  longer award points or cost lives, so an old object can never score under a
-  new instruction.
-* Duplicate taps are harmless: processed objects are remembered by id and a
-  second tap scores nothing again.
+  missed-target counter. Three lost lives (misses plus wrong taps) end the run.
+* When the target changes, in-flight objects are removed and a short
+  ``transition`` window blocks spawns and taps, so the old instruction can
+  never score or punish the player under the new one.
+* Duplicate taps are harmless: processed objects are remembered by id, so a
+  second tap on the same object neither scores nor costs another life.
 
 The service layer persists score/XP; this module owns the numbers.
 """
@@ -61,6 +61,11 @@ SPAWN_LOOKAHEAD_MS = 2_500
 WARMUP_MS = 1_200
 PROCESSED_ID_MEMORY = 60
 TARGET_CHANGE_LEAD_MS = 500
+# Target-change hand-over: spawns pause and taps are inert for this long while
+# the client shows the "target changed" popup. The client learns about the
+# change on its next poll (~0.9 s), so this is slightly longer than the
+# intended 1.5-2 s popup to keep the full window visible.
+TARGET_TRANSITION_MS = 2_400
 
 
 @dataclass(frozen=True)
@@ -224,8 +229,10 @@ def new_state(
         "accuracy_correct": 0,
         "accuracy_total": 0,
         "target": target,
-        "target_changed_ms": now_ms,
+        "target_changed_ms": 0,
         "next_target_change_ms": now_ms + cfg.target_change_ms,
+        "transition_started_ms": 0,
+        "transition_until_ms": 0,
         "objects": [],
         "seq": 0,
         "next_spawn_ms": now_ms,
@@ -251,6 +258,11 @@ def new_state(
 
 def is_target_object(obj: dict[str, Any]) -> bool:
     return bool(obj.get("is_target")) and not bool(obj.get("stale"))
+
+
+def is_transitioning(state: dict[str, Any], now_ms: int) -> bool:
+    """True during the target-change hand-over (popup on screen)."""
+    return now_ms < int(state.get("transition_until_ms") or 0)
 
 
 def _accuracy(state: dict[str, Any]) -> float:
@@ -399,12 +411,20 @@ def _change_target_if_due(
     state["target"] = _roll_target(cfg, rng, exclude=state["target"])
     state["target_changed_ms"] = now_ms
     state["next_target_change_ms"] = now_ms + cfg.target_change_ms
-    # In-flight objects were classified under the old instruction: neutral.
+    # Objects classified under the old instruction are cleared: they can no
+    # longer be tapped for points, and tapping them can no longer cost a life
+    # under the new instruction.
     for obj in state["objects"]:
         obj["stale"] = True
-    state["next_target_ms"] = min(
-        state.get("next_target_ms", now_ms), now_ms + TARGET_CHANGE_LEAD_MS
+    state["objects"] = []
+    # Hand-over window: no spawns, no taps. Spawning restarts right after it.
+    state["transition_started_ms"] = now_ms
+    state["transition_until_ms"] = now_ms + TARGET_TRANSITION_MS
+    state["next_spawn_ms"] = max(
+        int(state.get("next_spawn_ms", now_ms)),
+        state["transition_until_ms"] + 250,
     )
+    state["next_target_ms"] = state["transition_until_ms"] + TARGET_CHANGE_LEAD_MS
 
 
 def _spawn_due(
@@ -508,10 +528,19 @@ def resume(state: dict[str, Any], now_ms: int) -> None:
     if delta:
         for obj in state["objects"]:
             obj["spawned_at_ms"] += delta
-        for key in ("next_spawn_ms", "next_target_ms", "next_target_change_ms", "started_ms"):
+        for key in (
+            "next_spawn_ms",
+            "next_target_ms",
+            "next_target_change_ms",
+            "started_ms",
+            "transition_started_ms",
+            "transition_until_ms",
+        ):
             if isinstance(state.get(key), int):
                 state[key] += delta
-        state["target_changed_ms"] = int(state.get("target_changed_ms", 0)) + delta
+        # `target_changed_ms` doubles as the client's "show the popup once"
+        # nonce, so it must NOT move with the timeline: a paused-and-resumed
+        # run would replay the same popup with a new id.
         state["paused_total_ms"] = int(state.get("paused_total_ms", 0)) + delta
     state["paused"] = False
     state["paused_at_ms"] = None
@@ -538,7 +567,8 @@ def tap(
     """Validate and apply one tap. Never raises for stale/unknown ids.
 
     Returns ``{outcome, object_id, points}`` where outcome is one of
-    ``hit``, ``wrong``, ``duplicate``, ``expired``, ``paused``, ``finished``.
+    ``hit``, ``wrong``, ``duplicate``, ``expired``, ``paused``, ``finished``,
+    ``transition``, ``too_early``.
     """
     if not isinstance(object_id, str) or not object_id.strip():
         raise ValueError("object_id must be a non-empty string")
@@ -550,6 +580,9 @@ def tap(
     advance(state, now_ms, rng)
     if state.get("finished"):
         return {"outcome": "finished", "object_id": object_id, "points": 0}
+    if is_transitioning(state, now_ms):
+        # Cards were cleared at the change; a tap during the popup is inert.
+        return {"outcome": "transition", "object_id": object_id, "points": 0}
 
     if object_id in (state.get("processed_ids") or []):
         return {"outcome": "duplicate", "object_id": object_id, "points": 0}
@@ -568,8 +601,14 @@ def tap(
     state["accuracy_total"] += 1
 
     if not is_target_object(obj):
+        # Wrong-target penalty: one life per mistyped object, charged exactly
+        # once because the object is now in processed_ids.
         state["wrong_taps"] += 1
         state["combo"] = 0
+        state["lives"] = max(0, state["lives"] - 1)
+        obj["outcome"] = "wrong"
+        if state["lives"] <= 0:
+            _end(state, now_ms)
         return {"outcome": "wrong", "object_id": object_id, "points": 0}
 
     state["hits"] += 1
@@ -655,6 +694,17 @@ def public_objects(state: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def inactive_transition(target: dict[str, str]) -> dict[str, Any]:
+    """Transition payload with nothing pending (start screen, results)."""
+    return {
+        "active": False,
+        "id": 0,
+        "started_at_ms": 0,
+        "until_ms": 0,
+        "target": {"color": target["color"], "shape": target["shape"]},
+    }
+
+
 def public_view(
     state: dict[str, Any],
     now_ms: int,
@@ -688,6 +738,14 @@ def public_view(
         "target_changes_in_ms": max(
             0, int(state.get("next_target_change_ms", now_ms)) - now_ms
         ),
+        "transition": {
+            "active": is_transitioning(state, now_ms),
+            # Server timestamp doubles as a nonce: one popup per change.
+            "id": int(state.get("target_changed_ms") or 0),
+            "started_at_ms": int(state.get("transition_started_ms") or 0),
+            "until_ms": int(state.get("transition_until_ms") or 0),
+            "target": {"color": target["color"], "shape": target["shape"]},
+        },
         "paused": bool(state.get("paused")),
         "finished": bool(state.get("finished")),
         "game_over": bool(state.get("game_over")),

@@ -428,6 +428,7 @@ def _focus_result_view(session_id, meta: dict, result_row) -> dict:
         "config": focus_game.public_config(meta.get("difficulty", "medium")),
         "now_ms": 0,
         "target_changes_in_ms": 0,
+        "transition": focus_game.inactive_transition(target),
         "paused": False,
         "finished": True,
         "game_over": True,
@@ -676,6 +677,29 @@ class MiniappGameService:
                 max_attempts=config.max_attempts,
             )
             return _public_view(state, [])
+
+    async def _start_reflex(self, *, user_id, db_row, difficulty: str) -> dict:
+        """Create a Reflex Rush attempt.
+
+        Reaction times are measured client-side and submitted once at the
+        end, so there is no server-side secret to roll: the row only stores
+        the round count the finish endpoint validates against.
+        """
+        try:
+            config = reflex.REFLEX_DIFFICULTIES[difficulty]
+        except KeyError:
+            raise ValueError(
+                f"difficulty must be one of {sorted(reflex.REFLEX_DIFFICULTIES)}"
+            ) from None
+        state = await self.states.create(
+            user_id=user_id,
+            session_id=db_row.id,
+            game_type=GAME_TYPE_REFLEX_RUSH,
+            difficulty=difficulty,
+            secret=0,
+            max_attempts=config.rounds,
+        )
+        return _reflex_public_view(state)
 
     async def _start_color(self, *, user_id, db_row, difficulty: str) -> dict:
         try:

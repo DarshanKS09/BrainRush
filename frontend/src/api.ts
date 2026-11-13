@@ -322,7 +322,15 @@ export interface FocusConfig {
 export interface FocusTapFeedback {
   object_id: string;
   points: number;
-  outcome: 'hit' | 'wrong' | 'duplicate' | 'expired' | 'too_early' | 'paused' | 'finished';
+  outcome:
+    | 'hit'
+    | 'wrong'
+    | 'duplicate'
+    | 'expired'
+    | 'too_early'
+    | 'paused'
+    | 'finished'
+    | 'transition';
 }
 
 export interface FocusResult {
@@ -335,6 +343,15 @@ export interface FocusResult {
   wrong_taps: number;
   best_combo: number;
   duration_ms: number;
+}
+
+export interface FocusTransition {
+  active: boolean;
+  /** Server timestamp of the change; doubles as a "show once" nonce. */
+  id: number;
+  started_at_ms: number;
+  until_ms: number;
+  target: { color: FocusColor; shape: FocusShape };
 }
 
 export interface FocusState {
@@ -357,6 +374,8 @@ export interface FocusState {
   config: FocusConfig;
   now_ms: number;
   target_changes_in_ms: number;
+  /** Target-change hand-over: popup window, spawns and taps paused. */
+  transition: FocusTransition;
   paused: boolean;
   finished: boolean;
   game_over: boolean;

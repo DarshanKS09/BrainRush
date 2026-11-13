@@ -33,6 +33,15 @@ interface Feedback {
   id: number;
 }
 
+interface TargetChangePopup {
+  id: number;
+  color: FocusColor;
+  shape: FocusShape;
+  /** Server-measured time left in the hand-over window, used as the
+   *  popup's animation duration so gameplay resumes exactly when it ends. */
+  durationMs: number;
+}
+
 const FEEDBACK_CLASS: Record<FeedbackKind, string> = {
   hit: 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200',
   wrong: 'border-rose-400/40 bg-rose-500/15 text-rose-200',
@@ -112,6 +121,7 @@ export default function FocusPlayScreen({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [targetChange, setTargetChange] = useState<TargetChangePopup | null>(null);
   const [started, setStarted] = useState(false);
   const [busy, setBusy] = useState<'pause' | 'resume' | 'exit' | null>(null);
   const [replaying, setReplaying] = useState(false);
@@ -127,6 +137,8 @@ export default function FocusPlayScreen({
   const seqRef = useRef(0);
   const appliedRef = useRef(0);
   const feedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const popupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shownChangeRef = useRef(0);
   const removalTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
 
   // Mirrors so the animation/poll callbacks never need to re-subscribe.
@@ -151,6 +163,35 @@ export default function FocusPlayScreen({
     setView(next);
     setObjects((prev) => mergeFallingObjects(prev, next.objects ?? [], tappedRef.current));
     if (next.finished) setStarted(true);
+
+    // Target-change popup: one per server change id, timed by the server
+    // window so it disappears exactly when gameplay resumes.
+    const transition = next.transition;
+    if (
+      transition?.active &&
+      !next.paused &&
+      !next.finished &&
+      transition.id !== shownChangeRef.current
+    ) {
+      shownChangeRef.current = transition.id;
+      const durationMs = Math.max(500, transition.until_ms - next.now_ms);
+      setTargetChange({
+        id: transition.id,
+        color: transition.target.color,
+        shape: transition.target.shape,
+        durationMs,
+      });
+      if (popupTimer.current) clearTimeout(popupTimer.current);
+      popupTimer.current = setTimeout(() => {
+        if (mountedRef.current) setTargetChange(null);
+      }, durationMs);
+    } else if (!transition?.active || next.paused || next.finished) {
+      if (popupTimer.current) {
+        clearTimeout(popupTimer.current);
+        popupTimer.current = null;
+      }
+      setTargetChange(null);
+    }
   }, []);
 
   /** Requests are sequenced so a slow poll can never overwrite a new tap. */
@@ -184,7 +225,7 @@ export default function FocusPlayScreen({
     (obj: LocalFocusObject) => {
       const current = viewRef.current;
       if (tappedRef.current.has(obj.id)) return;
-      if (current && !current.finished && !current.paused) {
+      if (current && !current.finished && !current.paused && !current.transition.active) {
         if (isTargetObject(obj, current.target)) {
           showFeedback('miss', 'Missed target −1 life');
           haptic('error');
@@ -240,6 +281,7 @@ export default function FocusPlayScreen({
       mountedRef.current = false;
       cancelAnimationFrame(raf);
       if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
+      if (popupTimer.current) clearTimeout(popupTimer.current);
       for (const timer of removalTimers.current) clearTimeout(timer);
       removalTimers.current.clear();
       nodeRefs.current.clear();
@@ -341,12 +383,14 @@ export default function FocusPlayScreen({
   const tapObject = async (obj: LocalFocusObject) => {
     const current = viewRef.current;
     if (!current || current.finished || current.paused) return;
+    // The server is mid target-change hand-over: nothing can score or punish.
+    if (current.transition.active) return;
     if (obj.landed || tappedRef.current.has(obj.id)) return;
     // Scheduled shapes are delivered before they enter the play area.
     if (obj.spawned_at_ms > Date.now() + offsetRef.current) return;
     tappedRef.current.add(obj.id);
     const matching = isTargetObject(obj, current.target);
-    showFeedback(matching ? 'hit' : 'wrong', matching ? 'Target!' : 'Not the target');
+    showFeedback(matching ? 'hit' : 'wrong', matching ? 'CORRECT' : 'WRONG TARGET −1 life');
     haptic(matching ? 'light' : 'error');
     const node = nodeRefs.current.get(obj.id);
     if (node) {
@@ -362,10 +406,12 @@ export default function FocusPlayScreen({
       );
       const tap = state?.last_tap;
       if (tap) {
-        if (tap.outcome === 'hit') showFeedback('hit', `+${tap.points}`);
+        if (tap.outcome === 'hit') showFeedback('hit', `CORRECT +${tap.points}`);
         else if (tap.outcome === 'wrong') {
-          showFeedback('wrong', 'Not the target');
+          showFeedback('wrong', 'WRONG TARGET −1 life');
           haptic('error');
+        } else if (tap.outcome === 'transition') {
+          showFeedback('info', 'Get ready!');
         } else if (tap.outcome === 'expired') {
           setNotice('Too late — that shape already fell.');
         }
@@ -418,7 +464,7 @@ export default function FocusPlayScreen({
           <p className="mt-3 text-sm font-bold text-neon-cyan">+{result.xp_earned} XP</p>
           {result.wrong_taps > 0 && (
             <p className="mt-1 text-xs text-slate-400">
-              {result.wrong_taps} distractor tap{result.wrong_taps === 1 ? '' : 's'} · no lives lost
+              {result.wrong_taps} wrong tap{result.wrong_taps === 1 ? '' : 's'} · −1 life each
             </p>
           )}
           {notice && (
@@ -567,8 +613,40 @@ export default function FocusPlayScreen({
           </button>
         ))}
 
+        {targetChange && started && !view.paused && (
+          <div
+            className="focus-target-popup pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-abyss/85 px-4 backdrop-blur-sm"
+            style={{ animationDuration: `${targetChange.durationMs}ms` }}
+            role="status"
+            aria-live="assertive"
+          >
+            <div className="focus-target-card w-full max-w-[16rem] rounded-2xl border border-neon-cyan/40 bg-panel/95 px-4 py-5 text-center shadow-glow">
+              <p className="text-[11px] font-black uppercase tracking-[0.2em] text-neon-cyan">
+                Target changed!
+              </p>
+              <div className="mt-2 flex justify-center">
+                <ShapeGlyph
+                  shape={targetChange.shape}
+                  color={targetChange.color}
+                  className="h-16 w-16 drop-shadow"
+                />
+              </div>
+              <p className="mt-2 text-xl font-black leading-tight text-white">
+                <span style={{ color: SHAPE_FILL[targetChange.color] }}>
+                  {targetChange.color.toUpperCase()}
+                </span>{' '}
+                {targetChange.shape.toUpperCase()}
+              </p>
+              <p className="mt-1 text-sm font-semibold text-slate-200">Tap only this shape!</p>
+              <p className="mt-2 text-[10px] font-bold uppercase tracking-widest text-amber-300">
+                Get ready!
+              </p>
+            </div>
+          </div>
+        )}
+
         {feedback && (
-          <div className="pointer-events-none absolute inset-x-0 top-2 flex justify-center">
+          <div className="pointer-events-none absolute inset-x-0 top-2 z-30 flex justify-center">
             <span
               key={feedback.id}
               role="status"
@@ -593,7 +671,7 @@ export default function FocusPlayScreen({
                 {target.color.toLowerCase()}
               </b>{' '}
               shape before it reaches the bottom. Ignore the rest — you have {view.max_lives}{' '}
-              lives, and only missed targets cost one.
+              lives, and both a missed target and a wrong tap cost one.
             </p>
             <button
               onClick={startGame}
@@ -633,7 +711,7 @@ export default function FocusPlayScreen({
       </div>
 
       <p className="text-center text-[11px] text-slate-500">
-        Tap the target shapes · distractors are free · {view.max_lives} missed targets ends the run
+        Tap the target shapes · wrong shapes cost a life · {view.max_lives} lives ends the run
       </p>
       {notice && (
         <p className="text-center text-sm text-amber-300" role="alert">
