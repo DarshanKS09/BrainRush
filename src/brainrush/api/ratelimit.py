@@ -40,7 +40,10 @@ class RateLimiter:
 
 # Per-endpoint limiters (requests per minute unless noted).
 # Authenticated endpoints are keyed by user_id; unauthenticated by client ip.
-AUTH_LIMITER = RateLimiter(limit=60, window_seconds=60)      # general API
+# Interactive games poll live state and submit taps: 1 request/second (the
+# old 60/min) is below what one player legitimately needs, so the general
+# budget allows ~4 req/s per user while still bounding abuse.
+AUTH_LIMITER = RateLimiter(limit=240, window_seconds=60)     # general API
 ROOM_LIMITER = RateLimiter(limit=30, window_seconds=60)      # match create/join
 INVITE_LIMITER = RateLimiter(limit=20, window_seconds=60)    # invitations
 EXPENSIVE_LIMITER = RateLimiter(limit=30, window_seconds=60) # leaderboard/history large pages

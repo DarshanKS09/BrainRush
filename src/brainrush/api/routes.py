@@ -85,6 +85,15 @@ class MazeDirectionRequest(BaseModel):
     client_move_id: str = Field(min_length=1, max_length=64)
 
 
+class FocusTapRequest(BaseModel):
+    object_id: str = Field(min_length=1, max_length=64)
+    client_move_id: str = Field(min_length=1, max_length=64)
+
+
+class FocusPauseRequest(BaseModel):
+    paused: bool
+
+
 IdentityDep = Annotated[dict, Depends(get_verified_identity)]
 TelegramIdentityDep = Annotated[dict, Depends(get_verified_telegram_identity)]
 
@@ -204,27 +213,14 @@ async def games() -> dict:
             }
         elif entry["id"] == "focus_rush":
             item["xp_rules"] = {
-        "easy": {
-                    "base_xp": 10,
-                    "accuracy_bonus": 5,
-                    "combo_bonus": 3,
-                    "round_bonus": 2,
-                    "difficulty_multiplier": 1.0,
-                },
-                "medium": {
-                    "base_xp": 10,
-                    "accuracy_bonus": 5,
-                    "combo_bonus": 3,
-                    "round_bonus": 2,
-                    "difficulty_multiplier": 1.2,
-                },
-                "hard": {
-                    "base_xp": 10,
-                    "accuracy_bonus": 5,
-                    "combo_bonus": 3,
-                    "round_bonus": 2,
-                    "difficulty_multiplier": 1.4,
-                },
+                did: {
+                    "hit_points": cfg.hit_points,
+                    "max_combo_bonus": cfg.max_combo_bonus,
+                    "win_score": cfg.win_score,
+                    "max_lives": focus_game.MAX_LIVES,
+                    "xp_multiplier": cfg.xp_multiplier,
+                }
+                for did, cfg in focus_game.FOCUS_DIFFICULTIES.items()
             }
         catalog.append(item)
     return {"games": catalog}
@@ -294,26 +290,35 @@ async def move(
 @router.post("/sessions/{session_id}/focus-tap")
 async def focus_tap(
     session_id: uuid.UUID,
-    body: dict,
+    body: FocusTapRequest,
     identity: IdentityDep,
     session: SessionDep,
 ) -> dict:
-    """Submit one Focus Rush tap.
+    """Tap one falling object (Focus Rush).
 
-    Body: {{ "color": str, "shape": str, "client_move_id": str }}
+    The object id is the only game input: target match, points and lives are
+    resolved server-side against the stored run.
     """
-    color = body.get("color")
-    shape = body.get("shape")
-    client_move_id = body.get("client_move_id")
-    if not color or not shape or not client_move_id:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail="color, shape, and client_move_id are required")
     return await _service(session).focus_tap(
         session_id=session_id,
         user_id=identity["user_id"],
-        color=color,
-        shape=shape,
-        client_move_id=client_move_id,
+        object_id=body.object_id,
+        client_move_id=body.client_move_id,
+    )
+
+
+@router.post("/sessions/{session_id}/focus-pause")
+async def focus_pause(
+    session_id: uuid.UUID,
+    body: FocusPauseRequest,
+    identity: IdentityDep,
+    session: SessionDep,
+) -> dict:
+    """Pause/resume a Focus Rush run (server-side clock shift)."""
+    return await _service(session).focus_pause(
+        session_id=session_id,
+        user_id=identity["user_id"],
+        paused=body.paused,
     )
 
 @router.post("/sessions/{session_id}/direction")

@@ -1,537 +1,645 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from '../api';
-import { WebAppContext } from '../telegram';
+import {
+  api,
+  newClientGuessId,
+  type FocusColor,
+  type FocusResult,
+  type FocusShape,
+  type FocusState,
+} from '../api';
+import type { WebAppContext } from '../telegram';
+import { haptic } from '../telegram';
 import { ErrorNotice, Loading } from '../components/ui';
+import { MatchSubmitBanner } from '../components/MatchSubmit';
+import {
+  FOCUS_POLL_MS,
+  OBJECT_SIZE_PX,
+  SHAPE_FILL,
+  difficultySummary,
+  fallProgress,
+  instructionFor,
+  isTargetObject,
+  mergeFallingObjects,
+  objectTopPx,
+  shapeLabel,
+  type LocalFocusObject,
+} from '../focusutil';
 
-type Color = 'red' | 'blue' | 'green' | 'yellow';
-type Shape = 'circle' | 'square' | 'triangle' | 'diamond';
+type FeedbackKind = 'hit' | 'wrong' | 'miss' | 'info';
 
-interface RoundConfig {
-  displayDuration: number; // ms
-  gapDuration: number; // ms
-  shapesPerRound: number;
+interface Feedback {
+  kind: FeedbackKind;
+  text: string;
+  id: number;
 }
 
-// Shared configuration - used by both frontend and backend
-const ROUND_CONFIGS: Record<string, RoundConfig> = {
-  easy: { displayDuration: 1500, gapDuration: 1000, shapesPerRound: 5 },
-  medium: { displayDuration: 1000, gapDuration: 600, shapesPerRound: 8 },
-  hard: { displayDuration: 700, gapDuration: 300, shapesPerRound: 12 },
+const FEEDBACK_CLASS: Record<FeedbackKind, string> = {
+  hit: 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200',
+  wrong: 'border-rose-400/40 bg-rose-500/15 text-rose-200',
+  miss: 'border-amber-400/40 bg-amber-500/15 text-amber-200',
+  info: 'border-neon-cyan/40 bg-cyan-500/10 text-cyan-100',
 };
 
-// Single shape display - only one shape visible at a time
-function ShapeDisplay({ color, shape, isActive, onTap }: { color: Color; shape: Shape; isActive: boolean; onTap: () => void }) {
-  const colorBg: Record<Color, string> = {
-    red: 'bg-rose-600',
-    blue: 'bg-sky-600',
-    green: 'bg-emerald-500',
-    yellow: 'bg-amber-500',
-  };
-  const shapeClass: Record<Shape, string> = {
-    circle: 'rounded-full w-16 h-16 mx-auto',
-    square: 'rounded-md w-16 h-16 mx-auto',
-    triangle: 'rotate-6 w-16 h-16 mx-auto',
-    diamond: 'rotate-45 w-16 h-16 mx-auto',
-  };
-
-  const base = 'transition-all duration-150 ease-in-out';
-
+/** One falling shape. Rendered once; the rAF loop owns its transform. */
+function ShapeGlyph({
+  shape,
+  color,
+  className = '',
+}: {
+  shape: FocusShape;
+  color: FocusColor;
+  className?: string;
+}) {
+  const fill = SHAPE_FILL[color] ?? '#94a3b8';
+  const stroke = 'rgba(255,255,255,0.55)';
   return (
-    <button
-      onClick={isActive ? onTap : undefined}
-      disabled={!isActive}
-      className={`${base} ${colorBg[color]} ${shapeClass[shape]} text-white flex items-center justify-center rounded-2xl p-2 shadow-md`}
-      aria-label={isActive ? 'Tap shape' : 'Shape inactive'}
-    >
-      <svg
-        className="w-8 h-8"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        {shape === 'circle' && <circle cx="12" cy="12" r="8" />}
-        {shape === 'square' && <rect x="4" y="4" width="16" height="16" rx="2" />}
-        {shape === 'triangle' && (
-          <polygon
-            points="12 3 3 21 21 21"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="3"
-          />
-        )}
-        {shape === 'diamond' && (
-          <polygon
-            points="12 3 19 12 12 21 5 12"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="3"
-          />
-        )}
-      </svg>
-    </button>
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true" focusable="false">
+      {shape === 'circle' && (
+        <circle cx="12" cy="12" r="9.2" fill={fill} stroke={stroke} strokeWidth="1.1" />
+      )}
+      {shape === 'square' && (
+        <rect x="3.4" y="3.4" width="17.2" height="17.2" rx="2.6" fill={fill} stroke={stroke} strokeWidth="1.1" />
+      )}
+      {shape === 'triangle' && (
+        <polygon points="12,2.4 22,21.2 2,21.2" fill={fill} stroke={stroke} strokeWidth="1.1" />
+      )}
+      {shape === 'diamond' && (
+        <polygon points="12,1.8 22.2,12 12,22.2 1.8,12" fill={fill} stroke={stroke} strokeWidth="1.1" />
+      )}
+      {shape === 'star' && (
+        <polygon
+          points="12,1.6 15.2,8.2 22.4,9.3 17.2,14.3 18.4,21.5 12,18.1 5.6,21.5 6.8,14.3 1.6,9.3 8.8,8.2"
+          fill={fill}
+          stroke={stroke}
+          strokeWidth="1"
+        />
+      )}
+    </svg>
   );
+}
+
+function fallbackResult(view: FocusState): FocusResult {
+  return {
+    outcome: 'loss',
+    score: view.score,
+    xp_earned: 0,
+    accuracy_percent: view.accuracy_percent,
+    hits: view.hits,
+    missed_targets: view.missed,
+    wrong_taps: view.wrong_taps,
+    best_combo: view.best_combo,
+    duration_ms: 0,
+  };
 }
 
 export default function FocusPlayScreen({
   ctx,
   sessionId,
   onExit,
-  _matchId,
-  _onReplay,
-  _onBackToMatch,
+  onReplay,
+  matchId,
+  onBackToMatch,
 }: {
   ctx: WebAppContext;
   sessionId: string;
   onExit: () => void;
-  _matchId?: string | null;
-  _onReplay: (sessionId: string) => void;
-  _onBackToMatch: () => void;
+  onReplay: (sessionId: string) => void;
+  matchId?: string | null;
+  onBackToMatch?: () => void;
 }) {
-  const [state, setState] = useState<'ready' | 'countdown' | 'showing_shape' | 'gap' | 'round_result' | 'game_over'>('ready');
-  const [difficulty, setDifficulty] = useState<'easy' | 'medium' | 'hard'>('medium');
-  const [round, setRound] = useState(1);
-  const [roundsCompleted, setRoundsCompleted] = useState(0);
-  const [score, setScore] = useState(0);
-  const [lives, setLives] = useState(3);
-  const [currentTargetColor, setCurrentTargetColor] = useState<Color | null>(null);
-  const [currentTargetShape, setCurrentTargetShape] = useState<Shape | null>(null);
-  const [currentInstruction, setCurrentInstruction] = useState<string>('');
-  const [activeShape, setActiveShape] = useState<{ color: Color; shape: Shape } | null>(null);  // Single active shape
-  const [phase, setPhase] = useState<'showing' | 'gap'>('showing');  // 'showing' or 'gap'
-  const [showResult, setShowResult] = useState<'win' | 'loss' | null>(null);
-  const [roundResult, setRoundResult] = useState<{ roundNumber: number; correct: boolean; missed: boolean; scoreEarned: number } | null>(null);
+  const [view, setView] = useState<FocusState | null>(null);
+  const [objects, setObjects] = useState<LocalFocusObject[]>([]);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [started, setStarted] = useState(false);
+  const [busy, setBusy] = useState<'pause' | 'resume' | 'exit' | null>(null);
+  const [replaying, setReplaying] = useState(false);
 
-  const sessionRef = useRef<string>(sessionId);
-  sessionRef.current = sessionId;
+  const areaRef = useRef<HTMLDivElement | null>(null);
+  const nodeRefs = useRef(new Map<string, HTMLButtonElement>());
+  const objectsRef = useRef<LocalFocusObject[]>([]);
+  const viewRef = useRef<FocusState | null>(null);
+  const tappedRef = useRef(new Set<string>());
+  const offsetRef = useRef(0);
+  const pausedRef = useRef(true);
+  const mountedRef = useRef(true);
+  const seqRef = useRef(0);
+  const appliedRef = useRef(0);
+  const feedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const removalTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
 
-  // Game config based on difficulty
-  const config = ROUND_CONFIGS[difficulty];
-  const { displayDuration, gapDuration, shapesPerRound } = config;
-
-  // Load session state from API
+  // Mirrors so the animation/poll callbacks never need to re-subscribe.
   useEffect(() => {
-    let mounted = true;
+    objectsRef.current = objects;
+  }, [objects]);
+  useEffect(() => {
+    viewRef.current = view;
+    pausedRef.current = !view || view.paused || view.finished;
+  }, [view]);
 
-    api
-      .state(ctx.initData, sessionId)
-      .then((gs: any) => {
-        if (!mounted) return;
-        const s = gs as any;
-        setState('ready');
-        setDifficulty(s.difficulty || 'medium');
-        setRound(s.round || 1);
-        setRoundsCompleted(s.rounds_completed || 0);
-        setScore(s.score || 0);
-        setCurrentTargetColor(s.target_color || null);
-        setCurrentTargetShape(s.target_shape || null);
-        setCurrentInstruction(s.instruction || '');
-
-        // Set initial active shape from saved state if in showing phase
-        if (s.active_shape) {
-          setActiveShape({
-            color: s.active_shape[0] || 'blue',
-            shape: s.active_shape[1] || 'circle',
-          });
-          setPhase('showing');
-        } else if (s.phase === 'gap') {
-          setPhase('gap');
-        }
-
-        if (s.finished) {
-          setShowResult(s.result?.outcome === 'win' ? 'win' : 'loss');
-        }
-      })
-      .catch((e) => {
-        if (!mounted) return;
-        console.error('Failed to load session state:', e);
-      });
-
-    return () => {
-      mounted = false;
-    };
-  }, [ctx.initData, sessionId]);
-
-  // Countdown timer
-  const [count, setCount] = useState<number | null>(null);
-  const countdownRef = useRef<number | null>(null);
-
-  const startCountdown = useCallback(() => {
-    let seconds = 3;
-    if (countdownRef.current) clearInterval(countdownRef.current);
-    setCount(seconds);
-    countdownRef.current = window.setInterval(() => {
-      seconds--;
-      setCount(seconds);
-      if (seconds <= 0) {
-        clearInterval(countdownRef.current!);
-        setCount(null);
-        setState('showing_shape');
-      }
+  const showFeedback = useCallback((kind: FeedbackKind, text: string) => {
+    setFeedback({ kind, text, id: Date.now() + Math.random() });
+    if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
+    feedbackTimer.current = setTimeout(() => {
+      if (mountedRef.current) setFeedback(null);
     }, 1000);
   }, []);
 
-  // Shape display scheduling - single shape at a time
-  const shapeDisplayRef = useRef<number | null>(null);
-  const gapRef = useRef<number | null>(null);
+  const applyState = useCallback((next: FocusState) => {
+    if (next.now_ms > 0) offsetRef.current = next.now_ms - Date.now();
+    setView(next);
+    setObjects((prev) => mergeFallingObjects(prev, next.objects ?? [], tappedRef.current));
+    if (next.finished) setStarted(true);
+  }, []);
 
-  const startShapeDisplay = useCallback(() => {
-    if (shapeDisplayRef.current) clearTimeout(shapeDisplayRef.current);
-    if (gapRef.current) clearTimeout(gapRef.current);
-
-    // Reset: hide any active shape, set phase to showing
-    setActiveShape(null);
-    setPhase('showing');
-
-    const shapes: Shape[] = ['circle', 'square', 'triangle', 'diamond'];
-    const colors: Color[] = ['red', 'blue', 'green', 'yellow'];
-
-    const displayNext = () => {
-      // If game state changed or round complete, stop
-      if (state !== 'showing_shape' && state !== 'gap') return;
-
-      // If we've shown enough shapes for this round, move to round_result
-      if (phase === 'showing' && /* shapesShown count tracked separately */ true) {
-        // For now, we'll handle round completion via timer
-      }
-
-      // Pick a random shape and color for the next shape
-      const color = colors[Math.floor(Math.random() * colors.length)];
-      const shape = shapes[Math.floor(Math.random() * shapes.length)];
-
-      // Set this shape as the active one
-      setActiveShape({ color, shape });
-      setPhase('showing');
-
-      // Schedule disappearance after displayDuration
-      shapeDisplayRef.current = window.setTimeout(() => {
-        // Shape disappears - set to gap phase
-        setActiveShape(null);
-        setPhase('gap');
-
-        // Schedule next shape after gapDuration
-        gapRef.current = window.setTimeout(() => {
-          if (state === 'showing_shape') {
-            // Show next shape
-            displayNext();
-          } else if (state === 'gap') {
-            // Gap phase ended, transition back to showing_shape or round_result
-            if (phase === 'gap') {
-              // Check if we've completed enough shapes for this round
-              // In the new design, each round has shapesPerRound shapes to tap
-              // After all shapes are shown and tapped, round completes
-              setState('showing_shape');
-              displayNext();
-            }
-          }
-        }, gapDuration);
-      }, displayDuration);
-    };
-
-    // Start the sequence
-    displayNext();
-  }, [displayDuration, gapDuration, state, shapesPerRound]);
-
-  // Handle tap on active shape
-  const handleShapeTap = useCallback(
-    async (tapColor: Color, tapShape: Shape) => {
-      if (state !== 'showing_shape' && state !== 'gap') return;
-      if (!activeShape || activeShape.color !== tapColor || activeShape.shape !== tapShape) return;
-
-      try {
-        const next = await api.focus_tap(
-          ctx.initData,
-          sessionRef.current,
-          tapColor,
-          tapShape,
-          `shape-${Date.now()}`
-        );
-
-        const ns = next as any;
-        setState(prev => {
-          const newState = { ...prev, ...ns };
-          if (ns.round !== undefined) setRound(ns.round);
-          if (ns.rounds_completed !== undefined) setRoundsCompleted(ns.rounds_completed);
-          if (ns.score !== undefined) setScore(ns.score);
-          if (ns.lives !== undefined) setLives(ns.lives);
-          if (ns.target_color !== undefined) setCurrentTargetColor(ns.target_color);
-          if (ns.target_shape !== undefined) setCurrentTargetShape(ns.target_shape);
-          if (ns.instruction !== undefined) setCurrentInstruction(ns.instruction);
-          if (ns.display_targets !== undefined) {
-            // Convert display_targets to active_shape format
-            const dt = ns.display_targets?.[0];
-            if (dt) {
-              setActiveShape({ color: dt.color || 'blue', shape: dt.shape || 'circle' });
-              setPhase('showing');
-            } else {
-              setActiveShape(null);
-              setPhase('gap');
-            }
-          }
-          return newState;
-        });
-
-        // Check if round completed (3 rounds)
-        if (ns.rounds_completed && ns.rounds_completed >= 3) {
-          setRound(prev => prev + 1);
-          setRoundsCompleted(3);
-          setState('round_result');
-          setRoundResult({
-            roundNumber: round,
-            correct: ns.correct || false,
-            missed: false,
-            scoreEarned: ns.points_earned || 0,
-          });
-        }
-      } catch (e) {
-        console.error('Tap failed:', e);
-      }
+  /** Requests are sequenced so a slow poll can never overwrite a new tap. */
+  const runRequest = useCallback(
+    async (fn: () => Promise<FocusState>) => {
+      const id = ++seqRef.current;
+      const state = await fn();
+      if (id < appliedRef.current) return null;
+      appliedRef.current = id;
+      applyState(state);
+      return state;
     },
-    [state, sessionRef.current, activeShape]
+    [applyState],
   );
 
-  // Round result handling - auto-progress, no manual Next Round button
-  const handleRoundComplete = useCallback(() => {
-    if (round < 3) {
-      // Auto-transition to next round after short delay
-      setRound(round + 1);
-      setRoundsCompleted(round);
-      // Brief result display then auto-prepare next round
-      const resultTimeout = setTimeout(() => {
-        setState('ready');
-        startCountdown();
-      }, 1500);
-      return () => clearTimeout(resultTimeout);
-    } else {
-      // Round 3 completed, show final results
-      setState('game_over');
-      // Backend already saved results
-      api.focus_tap(ctx.initData, sessionRef.current, 'blue', 'circle', 'final').then(() => {}).catch(() => {});
-    }
-  }, [round, setRound, setRoundsCompleted]);
+  const load = useCallback(() => {
+    setError('');
+    api
+      .focusState(ctx.initData, sessionId)
+      .then((state) => {
+        applyState(state);
+        if (!state.paused || state.finished) setStarted(true);
+      })
+      .catch((e: Error) => setError(e.message));
+  }, [ctx.initData, sessionId, applyState]);
 
-  // Cleanup timers on unmount
+  useEffect(load, [load]);
+
+  // Bottom-boundary handling: feedback + fade, then drop the node.
+  const handleLanded = useCallback(
+    (obj: LocalFocusObject) => {
+      const current = viewRef.current;
+      if (tappedRef.current.has(obj.id)) return;
+      if (current && !current.finished && !current.paused) {
+        if (isTargetObject(obj, current.target)) {
+          showFeedback('miss', 'Missed target −1 life');
+          haptic('error');
+        }
+      }
+      const node = nodeRefs.current.get(obj.id);
+      if (node) {
+        node.style.transition = 'opacity 160ms linear';
+        node.style.opacity = '0';
+        nodeRefs.current.delete(obj.id);
+      }
+      const timer = setTimeout(() => {
+        removalTimers.current.delete(timer);
+        if (mountedRef.current) {
+          setObjects((prev) => prev.filter((o) => o.id !== obj.id));
+        }
+      }, 180);
+      removalTimers.current.add(timer);
+    },
+    [showFeedback],
+  );
+  const landedRef = useRef(handleLanded);
   useEffect(() => {
+    landedRef.current = handleLanded;
+  }, [handleLanded]);
+
+  // One animation loop for the whole screen; React never re-renders per frame.
+  useEffect(() => {
+    mountedRef.current = true;
+    let raf = 0;
+    const frame = () => {
+      raf = requestAnimationFrame(frame);
+      const area = areaRef.current;
+      if (!area || pausedRef.current) return;
+      const height = area.clientHeight;
+      if (height <= 0) return;
+      const now = Date.now() + offsetRef.current;
+      for (const obj of objectsRef.current) {
+        if (obj.landed) continue;
+        const progress = fallProgress(obj.spawned_at_ms, obj.fall_ms, now);
+        const node = nodeRefs.current.get(obj.id);
+        if (node) {
+          node.style.transform = `translate3d(0, ${objectTopPx(progress, height)}px, 0)`;
+        }
+        if (progress >= 1) {
+          obj.landed = true;
+          landedRef.current(obj);
+        }
+      }
+    };
+    raf = requestAnimationFrame(frame);
     return () => {
-      if (countdownRef.current) clearInterval(countdownRef.current);
-      if (shapeDisplayRef.current) clearTimeout(shapeDisplayRef.current);
-      if (gapRef.current) clearTimeout(gapRef.current);
+      mountedRef.current = false;
+      cancelAnimationFrame(raf);
+      if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
+      for (const timer of removalTimers.current) clearTimeout(timer);
+      removalTimers.current.clear();
+      nodeRefs.current.clear();
     };
   }, []);
 
-  // Error state
-  if (error && !state) return <ErrorNotice message={error} onRetry={() => window.location.reload()} />;
-  if (!state) return <Loading label="Loading game…" />;
+  const playing = !!view && started && !view.paused && !view.finished;
 
-  // ---- State machine rendering ----
+  // Server poll: spawns new shapes and resolves misses authoritatively.
+  useEffect(() => {
+    if (!playing) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      try {
+        await runRequest(() => api.focusState(ctx.initData, sessionId));
+      } catch {
+        /* transient: the next tick retries */
+      }
+      if (!cancelled) timer = setTimeout(tick, FOCUS_POLL_MS);
+    };
+    timer = setTimeout(tick, FOCUS_POLL_MS);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [playing, ctx.initData, sessionId, runRequest]);
 
-  if (state === 'ready') {
+  // Stop animating immediately when paused; resume re-syncs from the server.
+  useEffect(() => {
+    pausedRef.current = !view || view.paused || view.finished;
+  }, [view]);
+
+  const startGame = async () => {
+    if (busy) return;
+    setBusy('resume');
+    setNotice('');
+    try {
+      const state = await runRequest(() => api.focusPause(ctx.initData, sessionId, false));
+      if (state) {
+        setStarted(true);
+        showFeedback('info', 'Go! Tap the matching shapes.');
+      }
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : 'Could not start the game.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const togglePause = async () => {
+    const current = viewRef.current;
+    if (!current || current.finished || busy) return;
+    const shouldPause = !current.paused;
+    setBusy(shouldPause ? 'pause' : 'resume');
+    setNotice('');
+    if (shouldPause) {
+      pausedRef.current = true;
+      setView((prev) => (prev ? { ...prev, paused: true } : prev));
+    }
+    try {
+      const state = await runRequest(() =>
+        api.focusPause(ctx.initData, sessionId, shouldPause),
+      );
+      if (state) applyState(state);
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : 'Could not change pause state.');
+      load();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const giveUp = async () => {
+    if (busy) return;
+    setBusy('exit');
+    try {
+      await api.cancel(ctx.initData, sessionId);
+    } catch {
+      /* already gone: still exit */
+    }
+    onExit();
+  };
+
+  const replay = async () => {
+    if (replaying) return;
+    setReplaying(true);
+    setNotice('');
+    try {
+      const next = await api.start(ctx.initData, 'focus_rush', view?.difficulty ?? 'medium');
+      onReplay(next.session_id);
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : 'Could not start a new run.');
+    } finally {
+      setReplaying(false);
+    }
+  };
+
+  const tapObject = async (obj: LocalFocusObject) => {
+    const current = viewRef.current;
+    if (!current || current.finished || current.paused) return;
+    if (obj.landed || tappedRef.current.has(obj.id)) return;
+    // Scheduled shapes are delivered before they enter the play area.
+    if (obj.spawned_at_ms > Date.now() + offsetRef.current) return;
+    tappedRef.current.add(obj.id);
+    const matching = isTargetObject(obj, current.target);
+    showFeedback(matching ? 'hit' : 'wrong', matching ? 'Target!' : 'Not the target');
+    haptic(matching ? 'light' : 'error');
+    const node = nodeRefs.current.get(obj.id);
+    if (node) {
+      node.style.transition = 'transform 120ms ease, opacity 120ms ease';
+      node.style.transform = `${node.style.transform} scale(0.4)`;
+      node.style.opacity = '0';
+      nodeRefs.current.delete(obj.id);
+    }
+    setObjects((prev) => prev.filter((o) => o.id !== obj.id));
+    try {
+      const state = await runRequest(() =>
+        api.focusTap(ctx.initData, sessionId, obj.id, newClientGuessId()),
+      );
+      const tap = state?.last_tap;
+      if (tap) {
+        if (tap.outcome === 'hit') showFeedback('hit', `+${tap.points}`);
+        else if (tap.outcome === 'wrong') {
+          showFeedback('wrong', 'Not the target');
+          haptic('error');
+        } else if (tap.outcome === 'expired') {
+          setNotice('Too late — that shape already fell.');
+        }
+      }
+    } catch (e) {
+      tappedRef.current.delete(obj.id);
+      setNotice(e instanceof Error ? e.message : 'Tap failed. Check your connection.');
+    }
+  };
+
+  if (error && !view) return <ErrorNotice message={error} onRetry={load} />;
+  if (!view) return <Loading label="Loading Focus Rush…" />;
+
+  const target = view.target;
+  const targetName = `${target.color.toUpperCase()} ${target.shape.toUpperCase()}`;
+
+  if (view.finished) {
+    const result = view.result ?? fallbackResult(view);
+    const seconds = Math.round(result.duration_ms / 1000);
     return (
-      <div className="min-h-screen flex items-center justify-center p-8">
-        <div className="rounded-3xl bg-panel p-8 text-center shadow-card">
-          <div className="text-6xl" aria-hidden>🎯</div>
-          <h2 className="mt-4 text-2xl font-bold text-white">Focus Rush</h2>
-          <p className="mt-2 text-sm text-slate-300">
-            Select difficulty to start a 60-second attention challenge.
-          </p>
-          <div className="mt-6 grid grid-cols-3 gap-2">
-            <button
-              onClick={() => setDifficulty('easy')}
-              className={`rounded-xl py-2 px-4 text-sm font-bold transition-all ${difficulty === 'easy' ? 'bg-gradient-to-br from-neon-purple to-neon-cyan text-white shadow-glow' : 'bg-navy text-slate-300 active:scale-95'}`}
-            >
-              Easy
-            </button>
-            <button
-              onClick={() => setDifficulty('medium')}
-              className={`rounded-xl py-2 px-4 text-sm font-bold transition-all ${difficulty === 'medium' ? 'bg-gradient-to-br from-neon-purple to-neon-cyan text-white shadow-glow' : 'bg-navy text-slate-300 active:scale-95'}`}
-            >
-              Medium
-            </button>
-            <button
-              onClick={() => setDifficulty('hard')}
-              className={`rounded-xl py-2 px-4 text-sm font-bold transition-all ${difficulty === 'hard' ? 'bg-gradient-to-br from-neon-purple to-neon-cyan text-white shadow-glow' : 'bg-navy text-slate-300 active:scale-95'}`}
-            >
-              Hard
-            </button>
+      <div className="space-y-3">
+        <div className="rounded-3xl bg-panel p-6 text-center shadow-card animate-pop">
+          <div className="text-5xl" aria-hidden>
+            {result.outcome === 'win' ? '🏆' : '💪'}
           </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (state === 'countdown') {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-8">
-        <div className="rounded-3xl bg-panel p-8 text-center shadow-card">
-          <div className="text-8xl font-bold text-neon-cyan" aria-hidden>
-            {count ?? 3}
-          </div>
-          <p className="mt-2 text-sm text-slate-300">Get ready!</p>
-          <p className="mt-1 text-xs text-slate-400">Tap any time during the countdown to prepare</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (state === 'showing_shape') {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-4">
-        <div className="flex items-center justify-between w-full mb-6">
-          <button
-            onClick={onExit}
-            className="rounded-xl bg-panel px-3 py-1.5 text-sm font-semibold text-slate-300 active:scale-95"
-            aria-label="Back to lobby"
-          >
-            ← Lobby
-          </button>
-          <span className="rounded-full bg-panel px-3 py-1 text-xs font-bold uppercase tracking-wider text-neon-cyan">
-            {difficulty}
-          </span>
-          <button
-            onClick={onExit}
-            className="rounded-xl bg-panel px-3 py-1.5 text-sm font-semibold text-rose-300 active:scale-95"
-            aria-label="Cancel game"
-          >
-            ✕ Give up
-          </button>
-        </div>
-
-        <div className="relative w-full max-w-md">
-          <div className="mt-3 text-lg font-bold text-white text-center">
-            {currentInstruction || 'Tap only ' + (currentTargetColor || 'blue') + ' ' + (currentTargetShape || 'circle')}
-          </div>
-
-          {activeShape && phase === 'showing' && (
-            <div className="absolute center-top left-1/2 -translate-x-1/2 w-24 h-24 rounded-full flex items-center justify-center">
-              <ShapeDisplay
-                color={activeShape.color}
-                shape={activeShape.shape}
-                isActive={true}
-                onTap={() => handleShapeTap(activeShape.color, activeShape.shape)}
-              />
-            </div>
-          )}
-
-          {!activeShape && phase === 'gap' && (
-            <p className="mt-4 text-center text-slate-400">Shape disappeared - get ready for next</p>
-          )}
-
-          {!activeShape && phase === 'showing' && (
-            <p className="mt-4 text-center text-slate-400">Tap the shape matching the instruction</p>
-          )}
-        </div>
-
-        <div className="mt-4 flex justify-between text-sm text-slate-300 w-full">
-          <span>Lives: {lives}</span>
-          <span>Round: {round}/3</span>
-          <span>Time: {Math.max(0, 60 - Math.floor(Date.now() / 1000 - (new Date().getTime() - 60000) / 1000))}s</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (state === 'gap') {
-    // Gap phase - no shape visible, just text
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-4">
-        <div className="flex items-center justify-between w-full mb-6">
-          <button
-            onClick={onExit}
-            className="rounded-xl bg-panel px-3 py-1.5 text-sm font-semibold text-slate-300 active:scale-95"
-            aria-label="Back to lobby"
-          >
-            ← Lobby
-          </button>
-          <span className="rounded-full bg-panel px-3 py-1 text-xs font-bold uppercase tracking-wider text-neon-cyan">
-            {difficulty}
-          </span>
-          <button
-            onClick={onExit}
-            className="rounded-xl bg-panel px-3 py-1.5 text-sm font-semibold text-rose-300 active:scale-95"
-            aria-label="Cancel game"
-          >
-            ✕ Give up
-          </button>
-        </div>
-
-        <div className="relative w-full max-w-md">
-          <div className="mt-3 text-lg font-bold text-white text-center">
-            {currentInstruction || 'Tap only ' + (currentTargetColor || 'blue') + ' ' + (currentTargetShape || 'circle')}
-          </div>
-
-          <p className="mt-4 text-center text-slate-400">Get ready for the next shape...</p>
-
-          <div className="mt-4 flex justify-between text-sm text-slate-300 w-full">
-            <span>Lives: {lives}</span>
-            <span>Round: {round}/3</span>
-            <span>Time: {Math.max(0, 60 - Math.floor(Date.now() / 1000 - (new Date().getTime() - 60000) / 1000))}s</span>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (state === 'round_result') {
-    const result = roundResult!;
-    const won = result.correct;
-    return (
-      <div className={`rounded-3xl p-6 text-center shadow-card animate-pop ${won ? 'bg-panel animate-pulseWin' : 'bg-panel'}`}>
-        <div className="text-5xl" aria-hidden>{won ? '🏆' : '💪'}</div>
-        <h2 className="mt-2 text-2xl font-bold text-white">{won ? 'Round Won!' : 'Missed Shape'}</h2>
-        <p className="mt-1 text-sm text-slate-300">
-          {won ? (
-            <>
-              Correct! +{result.scoreEarned} points
-            </>
-          ) : (
-            <>
-              Incorrect tap or missed shape
-            </>
-          )}
-        </p>
-        <div className="mt-4">
-          <button
-            onClick={() => setState('ready')}
-            className="flex-1 rounded-xl bg-gradient-to-r from-neon-purple to-neon-cyan py-2.5 text-sm font-bold text-slate-200 active:scale-95"
-          >
-            Continue
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (state === 'game_over') {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-8">
-        <div className="rounded-3xl bg-panel p-8 text-center shadow-card animate-pop">
-          <div className="text-6xl" aria-hidden>{score > 0 ? '🏆' : '💪'}</div>
           <h2 className="mt-2 text-2xl font-bold text-white">
-            {score > 0 ? 'You Won!' : 'Out of Lives!'}
+            {result.outcome === 'win' ? 'Sharp focus!' : 'Run over'}
           </h2>
           <p className="mt-1 text-sm text-slate-300">
-            Final Score: {score} · Rounds Completed: {roundsCompleted}/3
+            Score <b className="text-neon-cyan">{result.score}</b> · {seconds}s survived
           </p>
-          <div className="mt-6 grid grid-cols-2 gap-2">
+          <div className="mx-auto mt-4 grid max-w-xs grid-cols-2 gap-2 text-left">
+            <div className="rounded-xl bg-navy px-3 py-2">
+              <p className="text-[10px] uppercase tracking-widest text-slate-400">Accuracy</p>
+              <p className="text-lg font-bold text-white">{Math.round(result.accuracy_percent)}%</p>
+            </div>
+            <div className="rounded-xl bg-navy px-3 py-2">
+              <p className="text-[10px] uppercase tracking-widest text-slate-400">Missed targets</p>
+              <p className="text-lg font-bold text-rose-300">{result.missed_targets}</p>
+            </div>
+            <div className="rounded-xl bg-navy px-3 py-2">
+              <p className="text-[10px] uppercase tracking-widest text-slate-400">Targets hit</p>
+              <p className="text-lg font-bold text-emerald-300">{result.hits}</p>
+            </div>
+            <div className="rounded-xl bg-navy px-3 py-2">
+              <p className="text-[10px] uppercase tracking-widest text-slate-400">Best combo</p>
+              <p className="text-lg font-bold text-white">{result.best_combo}</p>
+            </div>
+          </div>
+          <p className="mt-3 text-sm font-bold text-neon-cyan">+{result.xp_earned} XP</p>
+          {result.wrong_taps > 0 && (
+            <p className="mt-1 text-xs text-slate-400">
+              {result.wrong_taps} distractor tap{result.wrong_taps === 1 ? '' : 's'} · no lives lost
+            </p>
+          )}
+          {notice && (
+            <p className="mt-2 text-sm text-amber-300" role="alert">
+              {notice}
+            </p>
+          )}
+          <div className="mt-4 flex gap-2">
             <button
-              onClick={() => setState('ready')}
-              className="rounded-xl bg-gradient-to-r from-neon-purple to-neon-cyan py-3 text-base font-bold text-white shadow-glow active:scale-[0.99]"
-            >
-              Play Again
-            </button>
-            <button
-              onClick={() => onExit()}
-              className="rounded-xl bg-navy py-3 text-base font-bold text-slate-200 active:scale-95"
+              onClick={onExit}
+              className="flex-1 rounded-xl bg-navy py-2.5 text-sm font-bold text-slate-200 active:scale-95"
             >
               Lobby
             </button>
+            <button
+              onClick={replay}
+              disabled={replaying}
+              className="flex-1 rounded-xl bg-gradient-to-r from-neon-purple to-neon-cyan py-2.5 text-sm font-bold text-white shadow-glow active:scale-95 disabled:opacity-50"
+            >
+              {replaying ? 'Starting…' : '↻ Play again'}
+            </button>
           </div>
         </div>
+        {matchId && onBackToMatch && (
+          <MatchSubmitBanner
+            ctx={ctx}
+            matchId={matchId}
+            sessionId={sessionId}
+            onBackToMatch={onBackToMatch}
+          />
+        )}
       </div>
     );
   }
 
-  return null;
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <button
+          onClick={giveUp}
+          disabled={busy === 'exit'}
+          className="rounded-xl bg-panel px-3 py-1.5 text-xs font-semibold text-slate-300 active:scale-95 disabled:opacity-50"
+          aria-label="Leave the game"
+        >
+          ← Lobby
+        </button>
+        <span className="truncate rounded-full bg-panel px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-neon-cyan">
+          {view.difficulty} · {difficultySummary(view.config)}
+        </span>
+        <button
+          onClick={togglePause}
+          disabled={busy !== null || !started}
+          className="rounded-xl bg-panel px-3 py-1.5 text-xs font-semibold text-slate-200 active:scale-95 disabled:opacity-50"
+          aria-label={view.paused ? 'Resume game' : 'Pause game'}
+        >
+          {view.paused ? '▶ Resume' : '⏸ Pause'}
+        </button>
+      </div>
+
+      <div className="rounded-2xl border border-neon-cyan/25 bg-navy px-3 py-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+              Target
+            </p>
+            <p className="truncate text-lg font-black leading-tight text-white">
+              <span style={{ color: SHAPE_FILL[target.color] }}>{target.color.toUpperCase()}</span>{' '}
+              {target.shape.toUpperCase()}
+            </p>
+          </div>
+          <ShapeGlyph shape={target.shape} color={target.color} className="h-9 w-9 shrink-0" />
+        </div>
+        <p className="mt-0.5 text-[11px] text-slate-400" aria-live="polite">
+          {instructionFor(target)} · new target in{' '}
+          {Math.max(0, Math.ceil(view.target_changes_in_ms / 1000))}s
+        </p>
+      </div>
+
+      <div className="flex items-center justify-between rounded-2xl bg-panel px-3 py-1.5">
+        <div>
+          <p className="text-[10px] uppercase tracking-widest text-slate-400">Score</p>
+          <p className="text-xl font-black leading-tight text-neon-cyan">{view.score}</p>
+        </div>
+        <div
+          className="flex gap-1 text-lg"
+          aria-label={`${view.lives} of ${view.max_lives} lives left`}
+        >
+          {Array.from({ length: view.max_lives }).map((_, i) => (
+            <span key={i} className={i < view.lives ? '' : 'opacity-20 grayscale'} aria-hidden>
+              ❤️
+            </span>
+          ))}
+        </div>
+        <div className="text-right">
+          <p className="text-[10px] uppercase tracking-widest text-slate-400">Missed</p>
+          <p
+            className={`text-xl font-black leading-tight ${
+              view.missed > 0 ? 'text-rose-300' : 'text-white'
+            }`}
+          >
+            {view.missed}/{view.max_lives}
+          </p>
+        </div>
+      </div>
+
+      <div
+        ref={areaRef}
+        className="relative h-[56vh] max-h-[560px] min-h-[320px] select-none overflow-hidden rounded-3xl border border-white/5 bg-gradient-to-b from-[#111c3c] to-[#0a0e1a] shadow-card"
+        aria-label="Falling shapes play area"
+      >
+        <div className="pointer-events-none absolute inset-0 flex justify-around opacity-[0.06]">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <span key={i} className="h-full w-px bg-white" />
+          ))}
+        </div>
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-rose-400/50 to-transparent" />
+
+        {objects.map((obj) => (
+          <button
+            key={obj.id}
+            ref={(el) => {
+              if (el) nodeRefs.current.set(obj.id, el);
+              else nodeRefs.current.delete(obj.id);
+            }}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              void tapObject(obj);
+            }}
+            type="button"
+            aria-label={`${obj.color} ${obj.shape}${
+              isTargetObject(obj, target) ? ', target' : ''
+            }`}
+            className="absolute top-0 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+            style={{
+              left: `calc(${obj.x * 100}% - ${OBJECT_SIZE_PX / 2}px)`,
+              width: OBJECT_SIZE_PX,
+              height: OBJECT_SIZE_PX,
+              transform: `translate3d(0, -${OBJECT_SIZE_PX}px, 0)`,
+              touchAction: 'manipulation',
+              willChange: 'transform',
+            }}
+          >
+            <span className="block h-full w-full transition-transform duration-100 active:scale-90">
+              <ShapeGlyph shape={obj.shape} color={obj.color} className="h-full w-full drop-shadow" />
+            </span>
+          </button>
+        ))}
+
+        {feedback && (
+          <div className="pointer-events-none absolute inset-x-0 top-2 flex justify-center">
+            <span
+              key={feedback.id}
+              role="status"
+              aria-live="polite"
+              className={`rounded-full border px-3 py-1 text-xs font-bold shadow-card ${FEEDBACK_CLASS[feedback.kind]}`}
+            >
+              {feedback.text}
+            </span>
+          </div>
+        )}
+
+        {!started && (
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-abyss/90 p-6 text-center backdrop-blur-sm">
+            <div className="flex items-center gap-2">
+              <ShapeGlyph shape={target.shape} color={target.color} className="h-10 w-10" />
+              <span className="text-2xl font-black text-white">Ready?</span>
+            </div>
+            <p className="max-w-[17rem] text-sm text-slate-300">
+              Tap every{' '}
+              <b className="text-white">
+                {shapeLabel(target.shape).toLowerCase()} shaped{' '}
+                {target.color.toLowerCase()}
+              </b>{' '}
+              shape before it reaches the bottom. Ignore the rest — you have {view.max_lives}{' '}
+              lives, and only missed targets cost one.
+            </p>
+            <button
+              onClick={startGame}
+              disabled={busy !== null}
+              className="w-full max-w-[16rem] rounded-xl bg-gradient-to-r from-neon-purple to-neon-cyan py-3 text-base font-bold text-white shadow-glow active:scale-[0.99] disabled:opacity-50"
+            >
+              {busy === 'resume' ? 'Starting…' : '▶ Start'}
+            </button>
+            <button onClick={giveUp} className="text-xs font-semibold text-slate-400">
+              Give up (no XP)
+            </button>
+          </div>
+        )}
+
+        {started && view.paused && (
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-abyss/85 p-6 text-center backdrop-blur-sm">
+            <p className="text-2xl font-black text-white">Paused</p>
+            <p className="text-sm text-slate-300">
+              Score <b className="text-neon-cyan">{view.score}</b> · target{' '}
+              <b className="text-white">{targetName}</b>
+            </p>
+            <button
+              onClick={togglePause}
+              disabled={busy !== null}
+              className="w-full max-w-[16rem] rounded-xl bg-gradient-to-r from-neon-purple to-neon-cyan py-3 text-base font-bold text-white shadow-glow active:scale-[0.99] disabled:opacity-50"
+            >
+              {busy === 'resume' ? 'Resuming…' : '▶ Resume'}
+            </button>
+            <button
+              onClick={giveUp}
+              className="rounded-xl bg-panel px-4 py-2 text-xs font-bold text-rose-300 active:scale-95"
+            >
+              ✕ Give up
+            </button>
+          </div>
+        )}
+      </div>
+
+      <p className="text-center text-[11px] text-slate-500">
+        Tap the target shapes · distractors are free · {view.max_lives} missed targets ends the run
+      </p>
+      {notice && (
+        <p className="text-center text-sm text-amber-300" role="alert">
+          {notice}
+        </p>
+      )}
+    </div>
+  );
 }

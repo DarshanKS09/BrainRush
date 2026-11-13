@@ -1,612 +1,700 @@
-"""Focus Rush: pure game rules (no Telegram, no database).
+"""Focus Rush: a falling-shapes attention arcade (pure rules, no DB/Telegram).
 
-Gameplay: an attention game where the player must tap only the shapes
-matching the current instruction (e.g., "Tap only BLUE CIRCLES") while
-ignoring all other shapes. 60-second session with 3 lives.
+Gameplay
+--------
+A target instruction (one colour + one shape) is displayed for the whole
+instruction window. Coloured shapes continuously fall from the top of the play
+area toward the bottom. The player taps exactly the falling objects that match
+the target; everything else is a distractor and must be ignored.
 
-Difficulty progressively increases: more colors, more shapes, more
-distractors, faster rounds, changing instructions, similar-looking targets.
+Rules implemented here (all server-authoritative):
 
-FAIRNESS: all game state (target, instruction, timing) is server-authoritative.
-Frontend only renders what the server provides; client tap values are validated
-server-side. Duplicate taps are idempotent per client_move_id.
+* Objects spawn on a server timeline with independent lanes, speeds and spawn
+  times. The client only animates the objects the server generated; it never
+  invents one.
+* Tapping a matching object removes it and awards ``hit_points`` plus a combo
+  bonus (capped at ``max_combo_bonus``).
+* Tapping a distractor awards nothing, costs no life, and resets the combo.
+  Lives are only lost by letting a *target* fall past the bottom.
+* A target that reaches the bottom untapped costs one life and increments the
+  missed-target counter. Three misses end the run.
+* Objects in flight when the target changes are marked ``stale``: they can no
+  longer award points or cost lives, so an old object can never score under a
+  new instruction.
+* Duplicate taps are harmless: processed objects are remembered by id and a
+  second tap scores nothing again.
+
+The service layer persists score/XP; this module owns the numbers.
 """
-
 from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Iterable
 
-# ---------------------------------------------------------------------------
-# Core types
-# ---------------------------------------------------------------------------
+GAME_TYPE = "focus_rush"
 
-Shape = str  # "circle", "square", "triangle", "diamond"
-Color = str  # "red", "blue", "green", "yellow"
+MAX_LIVES = 3
+STATE_VERSION = 2
 
-TargetSpec = Tuple[Color, Shape]  # (color, shape) pair e.g. ("blue", "circle")
+# Five colours and five shapes: easy/medium use subsets, hard uses all.
+COLORS: tuple[str, ...] = ("red", "blue", "green", "yellow", "purple")
+SHAPES: tuple[str, ...] = ("circle", "square", "triangle", "diamond", "star")
 
-# ---------------------------------------------------------------------------
-# Difficulty configurations
-# ---------------------------------------------------------------------------
+# Horizontal spawn lanes (fraction of play-area width). Independent objects,
+# but lanes keep shapes from stacking into one unreadable column.
+LANES: tuple[float, ...] = (0.09, 0.27, 0.45, 0.63, 0.81)
+LANE_BUSY_PROGRESS = 0.45
 
-# Each difficulty step adds more colors, shapes, and distractors.
-# The instruction always specifies exactly one (color, shape) pair to tap.
+# A client that stops polling (background tab, network drop) must not come
+# back to three instant misses: after this gap the timeline is rebased and
+# in-flight objects are dropped without penalty.
+STALL_RESET_MS = 6_000
+MAX_CATCHUP_SPAWNS = 24
+# Objects are generated this far ahead of their spawn instant so a client
+# polling about once a second still receives each shape before it enters the
+# top of the play area (no mid-screen pop-in).
+SPAWN_LOOKAHEAD_MS = 2_500
+# No targets during the first moment of a run: the player needs a beat to read
+# the instruction after pressing Start. Shapes still fall, so the screen is
+# alive; the first target cannot land before WARMUP_MS + fall_ms.
+WARMUP_MS = 1_200
+PROCESSED_ID_MEMORY = 60
+TARGET_CHANGE_LEAD_MS = 500
 
-FOCUS_DIFFICULTIES: dict[str, dict[str, Any]] = {
-    # Level 1: simplest — 1 color, 1 shape, 4 total targets
-    "level_1": {
-        "num_colors": 1,
-        "num_shapes": 1,
-        "total_targets": 4,
-        "distractor_ratio": 3,  # 3 distractors for every target
-        "instruction_ttl_ms": 5_000,  # instruction stays visible 5s min
-        "round_ms": 3_000,  # round duration before instruction changes
-        "combo_threshold": 5,  # combo multiplier activates after 5 correct
-        "correct_bonus": 10,
-        "incorrect_penalty_life": 1,
-        "miss_penalty_life": 0.5,  # fractional life loss for missed targets
-    },
-    # Level 2: 2 colors, 2 shapes, 8 total targets
-    "level_2": {
-        "num_colors": 2,
-        "num_shapes": 2,
-        "total_targets": 8,
-        "distractor_ratio": 3,
-        "instruction_ttl_ms": 4_000,
-        "round_ms": 2_500,
-        "combo_threshold": 5,
-        "correct_bonus": 10,
-        "incorrect_penalty_life": 1,
-        "miss_penalty_life": 0.5,
-    },
-    # Level 3: 3 colors, 2 shapes, 12 total targets, faster
-    "level_3": {
-        "num_colors": 3,
-        "num_shapes": 2,
-        "total_targets": 12,
-        "distractor_ratio": 3,
-        "instruction_ttl_ms": 3_500,
-        "round_ms": 2_000,
-        "combo_threshold": 5,
-        "correct_bonus": 10,
-        "incorrect_penalty_life": 1,
-        "miss_penalty_life": 0.5,
-    },
-    # Level 4: 3 colors, 3 shapes, 15 total targets
-    "level_4": {
-        "num_colors": 3,
-        "num_shapes": 3,
-        "total_targets": 15,
-        "distractor_ratio": 4,  # more distractors
-        "instruction_ttl_ms": 3_000,
-        "round_ms": 1_500,
-        "combo_threshold": 7,
-        "correct_bonus": 10,
-        "incorrect_penalty_life": 1,
-        "miss_penalty_life": 0.5,
-    },
-    # Level 5: 4 colors, 3 shapes, 20 total targets, faster
-    "level_5": {
-        "num_colors": 4,
-        "num_shapes": 3,
-        "total_targets": 20,
-        "distractor_ratio": 4,
-        "instruction_ttl_ms": 2_500,
-        "round_ms": 1_200,
-        "combo_threshold": 7,
-        "correct_bonus": 10,
-        "incorrect_penalty_life": 1,
-        "miss_penalty_life": 0.5,
-    },
-    # Level 6: 4 colors, 4 shapes, 25 total targets, fastest
-    "level_6": {
-        "num_colors": 4,
-        "num_shapes": 4,
-        "total_targets": 25,
-        "distractor_ratio": 4,
-        "instruction_ttl_ms": 2_000,
-        "round_ms": 1_000,
-        "combo_threshold": 10,
-        "correct_bonus": 10,
-        "incorrect_penalty_life": 1,
-        "miss_penalty_life": 0.5,
-    },
+
+@dataclass(frozen=True)
+class FocusConfig:
+    """Difficulty knobs. Timing/speed differences are real, not cosmetic."""
+
+    id: str
+    fall_ms: int  # time for one object to travel the full play area
+    fall_jitter: float  # per-object speed variation (fraction of fall_ms)
+    spawn_interval_ms: int  # base gap between spawns
+    spawn_jitter: float  # spawn gap variation
+    max_objects: int  # simultaneous objects cap
+    target_ratio: float  # chance a random spawn is a target
+    target_every_ms: int  # guaranteed target at least this often
+    target_change_ms: int  # how long one instruction stays active
+    colors: tuple[str, ...]
+    shapes: tuple[str, ...]
+    hit_points: int
+    max_combo_bonus: int
+    win_score: int
+    xp_multiplier: float
+
+
+FOCUS_DIFFICULTIES: dict[str, FocusConfig] = {
+    # Slow fall, sparse spawns, small palette, long instruction window.
+    "easy": FocusConfig(
+        id="easy",
+        fall_ms=5_200,
+        fall_jitter=0.10,
+        spawn_interval_ms=1_200,
+        spawn_jitter=0.20,
+        max_objects=6,
+        target_ratio=0.34,
+        target_every_ms=2_000,
+        target_change_ms=20_000,
+        colors=COLORS[:3],
+        shapes=SHAPES[:3],
+        hit_points=10,
+        max_combo_bonus=5,
+        win_score=120,
+        xp_multiplier=1.0,
+    ),
+    # Faster fall, denser spawns, one more colour and shape.
+    "medium": FocusConfig(
+        id="medium",
+        fall_ms=3_600,
+        fall_jitter=0.14,
+        spawn_interval_ms=780,
+        spawn_jitter=0.28,
+        max_objects=7,
+        target_ratio=0.30,
+        target_every_ms=1_700,
+        target_change_ms=15_000,
+        colors=COLORS[:4],
+        shapes=SHAPES[:4],
+        hit_points=14,
+        max_combo_bonus=6,
+        win_score=200,
+        xp_multiplier=1.25,
+    ),
+    # Fast fall, high spawn rate, full palette, shortest instruction window.
+    "hard": FocusConfig(
+        id="hard",
+        fall_ms=2_400,
+        fall_jitter=0.18,
+        spawn_interval_ms=460,
+        spawn_jitter=0.35,
+        max_objects=10,
+        target_ratio=0.28,
+        target_every_ms=1_400,
+        target_change_ms=11_000,
+        colors=COLORS,
+        shapes=SHAPES,
+        hit_points=18,
+        max_combo_bonus=8,
+        win_score=300,
+        xp_multiplier=1.5,
+    ),
 }
 
 
-def difficulty_id(level: int) -> str:
-    """Return the difficulty id for a given level (1-indexed)."""
-    mapping = {1: "level_1", 2: "level_2", 3: "level_3", 4: "level_4", 5: "level_5", 6: "level_6"}
-    return mapping.get(level, "level_1")
+def config_for(difficulty: str) -> FocusConfig:
+    """Difficulty config or ValueError (HTTP 422/400 at the route)."""
+    try:
+        return FOCUS_DIFFICULTIES[difficulty]
+    except KeyError:
+        raise ValueError(
+            f"difficulty must be one of {sorted(FOCUS_DIFFICULTIES)}"
+        ) from None
 
 
-def difficulties() -> list[str]:
-    """Return ordered list of difficulty ids."""
-    return list(FOCUS_DIFFICULTIES.keys())
+def instruction_for(target: dict[str, str]) -> str:
+    return f"TAP {target['color'].upper()} {target['shape'].upper()}S"
+
+
+def public_config(difficulty: str) -> dict[str, Any]:
+    """Config echoed to the client so timing constants live in one place."""
+    try:
+        cfg = config_for(difficulty)
+    except ValueError:
+        cfg = FOCUS_DIFFICULTIES["medium"]
+    return {
+        "fall_ms": cfg.fall_ms,
+        "spawn_interval_ms": cfg.spawn_interval_ms,
+        "max_objects": cfg.max_objects,
+        "target_change_ms": cfg.target_change_ms,
+        "colors": list(cfg.colors),
+        "shapes": list(cfg.shapes),
+        "max_lives": MAX_LIVES,
+    }
 
 
 # ---------------------------------------------------------------------------
-# Target generation
+# State creation
 # ---------------------------------------------------------------------------
 
 
-COLORS: list[Color] = ["red", "blue", "green", "yellow"]
-SHAPES: list[Shape] = ["circle", "square", "triangle", "diamond"]
+def _rng(rng: random.Random | None) -> random.Random:
+    return rng if rng is not None else random.Random()
 
 
-def all_possible_targets(num_colors: int, num_shapes: int) -> list[TargetSpec]:
-    """Generate the full grid of (color, shape) specs for the given palette."""
-    colors = COLORS[:num_colors]
-    shapes = SHAPES[:num_shapes]
-    targets: list[TargetSpec] = []
-    for c in colors:
-        for s in shapes:
-            targets.append((c, s))
-    return targets
+def _roll_target(
+    cfg: FocusConfig,
+    rng: random.Random,
+    *,
+    exclude: dict[str, str] | None = None,
+) -> dict[str, str]:
+    for _ in range(20):
+        candidate = {"color": rng.choice(cfg.colors), "shape": rng.choice(cfg.shapes)}
+        if exclude is None or candidate != exclude:
+            return candidate
+    # Single-colour/single-shape edge: flip only the shape if possible.
+    return {
+        "color": rng.choice([c for c in cfg.colors if exclude is None or c != exclude["color"]] or list(cfg.colors)),
+        "shape": rng.choice([s for s in cfg.shapes if exclude is None or s != exclude["shape"]] or list(cfg.shapes)),
+    }
 
 
-def generate_instruction(
-    level: int,
+def new_state(
+    difficulty: str,
+    now_ms: int,
     rng: random.Random | None = None,
 ) -> dict[str, Any]:
-    """Generate a random (instruction, target) pair for the given level.
-
-    Returns {
-        "instruction": "Tap only BLUE CIRCLES.",
-        "target_color": "blue",
-        "target_shape": "circle",
-        "valid_targets": [("blue", "circle")],  # always exactly one
-    }
-    """
-    cfg = FOCUS_DIFFICULTIES[f"level_{level}"]
-    num_colors = cfg["num_colors"]
-    num_shapes = cfg["num_shapes"]
-
-    # Choose the target (color, shape) pair
-    targets = all_possible_targets(num_colors, num_shapes)
-    target = rng.choice(targets) if rng else random.choice(targets)
-    target_color, target_shape = target
-
-    # Build the full grid of display targets (including distractors)
-    # We need total_targets tiles, with exactly one being the correct target.
-    # The rest are distractors: random (color, shape) pairs that are NOT the target.
-    display_targets: list[TargetSpec] = [target]  # start with the correct one
-
-    # Fill the rest with distractors
-    all_combos = all_possible_targets(num_colors, num_shapes)
-    # Remove the true target from the pool so it can't appear as a distractor
-    remaining = [t for t in all_combos if t != target]
-
-    # If we don't have enough distractors, allow repeats (rare at high levels)
-    while len(display_targets) < cfg["total_targets"]:
-        d = random.choice(remaining) if remaining else random.choice(all_combos)
-        display_targets.append(d)
-
-    # Shuffle the display order
-    if rng:
-        rng.shuffle(display_targets)
-    else:
-        random.shuffle(display_targets)
-
-    instruction = f"Tap only {target_color.upper()} {target_shape.upper()}S."
-
+    """Fresh run, paused so the instruction can be read before time starts."""
+    cfg = config_for(difficulty)
+    source = _rng(rng)
+    target = _roll_target(cfg, source)
     return {
-        "instruction": instruction,
-        "target_color": target_color,
-        "target_shape": target_shape,
-        "display_targets": display_targets,  # list of (color, shape) tuples
-        "num_targets": cfg["total_targets"],
+        "version": STATE_VERSION,
+        "game": GAME_TYPE,
+        "difficulty": cfg.id,
+        "lives": MAX_LIVES,
+        "score": 0,
+        "combo": 0,
+        "best_combo": 0,
+        "hits": 0,
+        "missed_targets": 0,
+        "wrong_taps": 0,
+        "distractors_passed": 0,
+        "targets_spawned": 0,
+        "accuracy_correct": 0,
+        "accuracy_total": 0,
+        "target": target,
+        "target_changed_ms": now_ms,
+        "next_target_change_ms": now_ms + cfg.target_change_ms,
+        "objects": [],
+        "seq": 0,
+        "next_spawn_ms": now_ms,
+        "next_target_ms": now_ms + WARMUP_MS + 300,
+        "started_ms": now_ms,
+        "ended_ms": None,
+        "last_advance_ms": now_ms,
+        "paused": True,
+        "paused_at_ms": now_ms,
+        "paused_total_ms": 0,
+        "processed_ids": [],
+        "recent_moves": [],
+        "finished": False,
+        "game_over": False,
+        "result": None,
     }
 
 
 # ---------------------------------------------------------------------------
-# Scoring
+# Timeline advance (resolve falls -> change target -> spawn)
 # ---------------------------------------------------------------------------
 
-def compute_score(
-    correct: bool,
-    combo: int,
-    combo_threshold: int,
-    base_bonus: int = 10,
-) -> int:
-    """Compute points for a tap.
 
-    - Base: base_bonus (default 10)
-    - Combo multiplier: 1x up to threshold, then +1x per additional correct
+def is_target_object(obj: dict[str, Any]) -> bool:
+    return bool(obj.get("is_target")) and not bool(obj.get("stale"))
+
+
+def _accuracy(state: dict[str, Any]) -> float:
+    total = state.get("accuracy_total", 0)
+    if total <= 0:
+        return 0.0
+    return round(state.get("accuracy_correct", 0) / total * 100, 1)
+
+
+def _end(state: dict[str, Any], now_ms: int) -> None:
+    if state.get("finished"):
+        return
+    state["finished"] = True
+    state["game_over"] = True
+    state["ended_ms"] = now_ms
+    state["objects"] = []
+    state["combo"] = 0
+
+
+def _resolve_falls(state: dict[str, Any], now_ms: int) -> None:
+    still_falling: list[dict[str, Any]] = []
+    for obj in state["objects"]:
+        if obj["spawned_at_ms"] + obj["fall_ms"] > now_ms:
+            still_falling.append(obj)
+            continue
+        if is_target_object(obj):
+            state["lives"] = max(0, state["lives"] - 1)
+            state["missed_targets"] += 1
+            state["accuracy_total"] += 1
+            state["combo"] = 0
+            obj["outcome"] = "missed"
+            if state["lives"] <= 0:
+                state["objects"] = still_falling
+                _end(state, now_ms)
+                return
+        else:
+            state["distractors_passed"] += 1
+            obj["outcome"] = "passed"
+    state["objects"] = still_falling
+
+
+def _has_live_target(state: dict[str, Any], now_ms: int) -> bool:
+    """A target the player can actually tap right now (not a scheduled one)."""
+    return any(
+        is_target_object(obj) and obj["spawned_at_ms"] <= now_ms
+        for obj in state["objects"]
+    )
+
+
+def _visible_count(state: dict[str, Any], now_ms: int) -> int:
+    """Objects already on screen; scheduled ones don't consume the cap."""
+    return sum(1 for obj in state["objects"] if obj["spawned_at_ms"] <= now_ms)
+
+
+def _alive_at(state: dict[str, Any], at_ms: int) -> int:
+    """How many objects would be on screen at ``at_ms``.
+
+    Used to enforce ``max_objects`` for shapes scheduled ahead: the cap is
+    about simultaneity, not about how far ahead generation runs.
     """
-    score = base_bonus
-    if correct and combo >= combo_threshold:
-        # Bonus: +1 point per combo beyond the threshold, capped at 3 extra
-        score += min(combo - combo_threshold, 3)
-    return score
+    return sum(
+        1
+        for obj in state["objects"]
+        if obj["spawned_at_ms"] <= at_ms < obj["spawned_at_ms"] + obj["fall_ms"]
+    )
 
 
-def life_penalty(
-    is_incorrect: bool,
-    is_missed: bool,
-    config: dict[str, Any],
-) -> float:
-    """Return life penalty. Positive = lose life(s)."""
-    if is_incorrect:
-        return config["incorrect_penalty_life"]
-    if is_missed:
-        return config["miss_penalty_life"]
-    return 0.0
+def _lane_for(state: dict[str, Any], at_ms: int, rng: random.Random) -> float:
+    busy: set[int] = set()
+    for obj in state["objects"]:
+        elapsed = max(0, at_ms - obj["spawned_at_ms"])
+        if elapsed / max(1, obj["fall_ms"]) >= LANE_BUSY_PROGRESS:
+            continue
+        # Nearest lane index to this object's x.
+        busy.add(min(range(len(LANES)), key=lambda i: abs(LANES[i] - obj["x"])))
+    free = [i for i in range(len(LANES)) if i not in busy]
+    if free:
+        return LANES[rng.choice(free)]
+    return LANES[rng.randrange(len(LANES))]
 
 
-# ---------------------------------------------------------------------------
-# Combo logic
-# ---------------------------------------------------------------------------
-
-def update_combo(
-    correct: bool,
-    combo: int,
-    combo_threshold: int,
-) -> int:
-    """Update combo count.
-
-    - Correct tap: increment combo
-    - Incorrect/missed: reset combo to 0
-    """
-    if correct:
-        return combo + 1
-    return 0
-
-
-# ---------------------------------------------------------------------------
-# Round/progression state
-# ---------------------------------------------------------------------------
-
-@dataclass
-class FocusRoundState:
-    """State for one round of Focus Rush (sequential shape display)."""
-
-    instruction: str
-    target_color: Color
-    target_shape: Shape
-    active_shape: Optional[TargetSpec] = None  # Currently visible (color, shape), None if gap
-    phase: str = 'showing'  # 'showing', 'gap', 'complete'
-    shapes_shown: int = 0  # how many shapes have been shown this round
-    shapes_per_round: int = 5  # from difficulty config (5/8/12)
-    round_number: int = 1
-    round_start_ms: int = 0  # when this round started
-    instruction_change_ms: int = 0  # when the instruction was last changed
-    finished: bool = False
-
-    def elapsed_ms(self, now_ms: int) -> int:
-        return now_ms - self.round_start_ms
-
-    def instruction_elapsed_ms(self, now_ms: int) -> int:
-        return now_ms - self.instruction_change_ms
-
-    def is_showing(self) -> bool:
-        return self.phase == 'showing' and self.active_shape is not None
-
-    def is_gap(self) -> bool:
-        return self.phase == 'gap'
-
-    def is_complete(self) -> bool:
-        return self.phase == 'complete' or self.shapes_shown >= self.shapes_per_round
-
-
-# ---------------------------------------------------------------------------
-# Game session state (what we store server-side)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class FocusSessionState:
-    """Server-side state for a Focus Rush game session."""
-
-    session_id: str
-    game_type: str = "focus_rush"
-    difficulty: str = "level_1"  # tracks current level
-    level: int = 1
-    time_remaining: int = 60  # seconds
-    lives: int = 3
-    score: int = 0
-    combo: int = 0
-    highest_round: int = 0
-    accuracy_correct: int = 0
-    accuracy_total: int = 0
-    best_combo: int = 0
-    rounds_completed: int = 0
-    current_round: Optional[FocusRoundState] = None
-    game_over: bool = False
-    finished: bool = False
-    last_instruction_change: int = 0  # epoch ms for instruction TTL
-
-    def to_public(self) -> dict:
-        """Return the public view for the frontend."""
+def _roll_distractor(
+    target: dict[str, str], cfg: FocusConfig, rng: random.Random
+) -> dict[str, str]:
+    for _ in range(20):
+        color = rng.choice(cfg.colors)
+        shape = rng.choice(cfg.shapes)
+        if color != target["color"] or shape != target["shape"]:
+            return {"color": color, "shape": shape}
+    # Palette of one: flip only one attribute.
+    if len(cfg.shapes) > 1:
         return {
-            "session_id": self.session_id,
-            "game_type": self.game_type,
-            "difficulty": self.difficulty,
-            "level": self.level,
-            "time_remaining": max(0, self.time_remaining),
-            "lives": max(0, self.lives),
-            "score": self.score,
-            "combo": self.combo,
-            "highest_round": self.highest_round,
-            "accuracy_percent": round(
-                self.accuracy_correct / self.accuracy_total * 100, 1
-            )
-            if self.accuracy_total > 0
-            else 0,
-            "best_combo": self.best_combo,
-            "rounds_completed": self.rounds_completed,
-            "game_over": self.game_over,
-            "finished": self.finished,
+            "color": target["color"],
+            "shape": rng.choice([s for s in cfg.shapes if s != target["shape"]]),
         }
-
-    def is_active(self) -> bool:
-        return not self.finished and self.lives > 0 and self.time_remaining > 0
-
-
-# ---------------------------------------------------------------------------
-# Core game logic functions (pure, no DB)
-# ---------------------------------------------------------------------------
-
-def start_new_session(session_id: str) -> FocusSessionState:
-    """Create a fresh session state."""
-    return FocusSessionState(session_id=session_id)
-
-
-def process_tap(
-    state: FocusSessionState,
-    tap_color: str,
-    tap_shape: Shape,
-    client_move_id: str,
-    now_ms: int,
-) -> dict[str, Any]:
-    """Process a player tap and return the result payload.
-
-    This is the core game logic function. It validates the tap against
-    the current instruction, updates state, and returns a result dict.
-    """
-    if state.finished or state.game_over:
-        return {"game_over": True, "finished": True, "result": state.to_public()}
-
-    # Get current round
-    round_state = state.current_round
-    if round_state is None:
-        # No round started yet — shouldn't happen, but safety first
-        return {"error": "no_active_round"}
-
-    cfg = FOCUS_DIFFICULTIES[state.difficulty]
-
-    # Check if instruction has been visible long enough
-    instruction_elapsed = round_state.instruction_elapsed_ms(now_ms)
-    if instruction_elapsed > cfg["instruction_ttl_ms"]:
-        # Instruction changed — this is a new round effectively
-        # (handled by the server scheduling instruction changes)
-        pass
-
-    # Determine if the tap is correct
-    is_correct = (
-        tap_color == round_state.target_color
-        and tap_shape == round_state.target_shape
-    )
-
-    # Count toward accuracy
-    state.accuracy_total += 1
-    if is_correct:
-        state.accuracy_correct += 1
-
-    # Update combo
-    new_combo = update_combo(is_correct, state.combo, cfg["combo_threshold"])
-    state.combo = new_combo
-
-    # Check for missed target (no tap within round time)
-    round_elapsed = round_state.elapsed_ms(now_ms)
-    round_duration = cfg["round_ms"]
-
-    # Determine if this tap was "missed" (too late)
-    is_missed = round_elapsed > round_duration and not round_state.finished
-
-    # If round is already finished (e.g. from timeout), just return
-    if round_state.finished:
-        return {"game_over": state.game_over, "finished": True, "result": state.to_public()}
-
-    # Process the tap result
-    # life_penalty returns positive value for losing life
-    # Pass the actual correctness status: incorrect tap = not is_correct
-    life_delta = life_penalty(not is_correct, is_missed, cfg)
-
-    if is_correct:
-        # Correct tap: add points
-        points = compute_score(
-            correct=True,
-            combo=new_combo,
-            combo_threshold=cfg["combo_threshold"],
-            base_bonus=cfg["correct_bonus"],
-        )
-        state.score += points
-
-        # Check for combo-based level progression
-        if new_combo >= cfg["combo_threshold"] and state.rounds_completed > 0:
-            # Chance to advance level based on combo
-            if random.random() < 0.1:  # 10% chance per combo threshold met
-                state.level = min(6, state.level + 1)
-                state.difficulty = difficulty_id(state.level)
-
-        # If we hit the combo threshold and haven't maxed level, possibly advance
-        if new_combo >= cfg["combo_threshold"] and state.level < 6:
-            # Advance level if enough rounds completed
-            if state.rounds_completed >= 3 and random.random() < 0.05:
-                state.level = min(6, state.level + 1)
-                state.difficulty = difficulty_id(state.level)
-
-    if not is_correct:
-        # Incorrect tap: lose life
-        state.lives = max(0, state.lives - life_delta)
-
-    # Check if missed (no valid tap in time)
-    if is_missed:
-        # Missed target penalty: lose a life
-        state.lives = max(0, state.lives - 0.5)  # fractional to allow 0.5 check
-
-    # Update highest round
-    if state.rounds_completed > state.highest_round:
-        state.highest_round = state.rounds_completed
-
-    # Check if round is complete (timer expired)
-    round_complete = round_elapsed >= round_duration
-
-    if round_complete and not round_state.finished:
-        # Advance to next round (new instruction, new target)
-        state.rounds_completed += 1
-        if state.rounds_completed > state.highest_round:
-            state.highest_round = state.rounds_completed
-
-        # Create next round
-        state.current_round = _new_round(state.level, now_ms)
-        state.instruction_change_ms = now_ms
-        round_state.finished = True  # mark old round finished
-
-        # Check level progression after rounds completed
-        _check_level_progression(state)
-
-    # Check game over conditions
-    if state.lives <= 0:
-        state.game_over = True
-        state.finished = True
-
-    if state.time_remaining <= 0:
-        state.finished = True
-        state.game_over = True
-
     return {
-        "game_over": state.game_over,
-        "finished": state.finished,
-        "result": state.to_public(),
-        "correct": is_correct,
-        "combo": state.combo,
-        "life_lost": life_delta > 0,
-        "points_earned": (
-            compute_score(correct=True, combo=new_combo, combo_threshold=cfg["combo_threshold"], base_bonus=cfg["correct_bonus"])
-            if is_correct
-            else 0
-        ),
+        "color": rng.choice([c for c in cfg.colors if c != target["color"]] or list(cfg.colors)),
+        "shape": target["shape"],
     }
 
-def _new_round(level: int, now_ms: int) -> FocusRoundState:
-    """Create a new round with a fresh instruction and target."""
-    instruction_data = generate_instruction(level)
-    return FocusRoundState(
-        instruction=instruction_data["instruction"],
-        target_color=instruction_data["target_color"],
-        target_shape=instruction_data["target_shape"],
-        active_shape=(instruction_data["target_color"], instruction_data["target_shape"]),
-        phase='showing',
-        shapes_shown=0,
-        shapes_per_round=instruction_data.get("num_targets", 5),
-        round_number=1,
-        round_start_ms=now_ms,
-        instruction_change_ms=now_ms,
-        finished=False,
+
+def _spawn(
+    state: dict[str, Any],
+    cfg: FocusConfig,
+    at_ms: int,
+    rng: random.Random,
+    *,
+    force_target: bool = False,
+) -> dict[str, Any]:
+    state["seq"] += 1
+    warming_up = at_ms - int(state.get("started_ms", at_ms)) < WARMUP_MS
+    target_match = (not warming_up) and (
+        force_target or rng.random() < cfg.target_ratio
+    )
+    if target_match:
+        spec = {
+            "color": state["target"]["color"],
+            "shape": state["target"]["shape"],
+        }
+        state["targets_spawned"] += 1
+    else:
+        spec = _roll_distractor(state["target"], cfg, rng)
+    fall_ms = int(
+        cfg.fall_ms * (1 + rng.uniform(-cfg.fall_jitter, max(0.0, cfg.fall_jitter)))
+    )
+    obj = {
+        "id": f"o{state['seq']}",
+        "color": spec["color"],
+        "shape": spec["shape"],
+        "x": round(_lane_for(state, at_ms, rng), 4),
+        "spawned_at_ms": int(at_ms),
+        "fall_ms": max(600, fall_ms),
+        "is_target": bool(target_match),
+        "stale": False,
+        "outcome": None,
+    }
+    state["objects"].append(obj)
+    return obj
+
+
+def _change_target_if_due(
+    state: dict[str, Any], cfg: FocusConfig, now_ms: int, rng: random.Random
+) -> None:
+    if now_ms < state["next_target_change_ms"]:
+        return
+    state["target"] = _roll_target(cfg, rng, exclude=state["target"])
+    state["target_changed_ms"] = now_ms
+    state["next_target_change_ms"] = now_ms + cfg.target_change_ms
+    # In-flight objects were classified under the old instruction: neutral.
+    for obj in state["objects"]:
+        obj["stale"] = True
+    state["next_target_ms"] = min(
+        state.get("next_target_ms", now_ms), now_ms + TARGET_CHANGE_LEAD_MS
     )
 
 
-def _check_level_progression(state: FocusSessionState) -> None:
-    """Check if the player should advance to a harder level."""
-    # Convert easy/medium/hard difficulty to level number for FOCUS_DIFFICULTIES lookup
-    difficulty = state.difficulty
-    level_map = {"easy": 1, "medium": 3, "hard": 6}
-    level = level_map.get(difficulty, 1)
-    cfg = FOCUS_DIFFICULTIES[f"level_{level}"]
+def _spawn_due(
+    state: dict[str, Any], cfg: FocusConfig, now_ms: int, rng: random.Random
+) -> None:
+    horizon = now_ms + SPAWN_LOOKAHEAD_MS
+    # Never schedule shapes past an instruction change: they would be
+    # classified under the outgoing target and stale the instant they appear.
+    horizon = min(horizon, int(state.get("next_target_change_ms", horizon)))
+    spawned = 0
+    while state["next_spawn_ms"] <= horizon and spawned < MAX_CATCHUP_SPAWNS:
+        at_ms = state["next_spawn_ms"]
+        # Far behind (freeze/tab switch): don't dump a backlog of shapes.
+        if now_ms - at_ms > cfg.spawn_interval_ms * 2:
+            at_ms = now_ms
+        gap = cfg.spawn_interval_ms * (
+            1 + rng.uniform(-cfg.spawn_jitter, cfg.spawn_jitter)
+        )
+        if _alive_at(state, at_ms) >= cfg.max_objects:
+            # Cap reached for that instant: skip this slot instead of
+            # stacking a burst of shapes on top of each other.
+            state["next_spawn_ms"] = int(at_ms + max(180, gap))
+            spawned += 1
+            continue
+        _spawn(state, cfg, at_ms, rng)
+        state["next_spawn_ms"] = int(at_ms + max(180, gap))
+        spawned += 1
 
-    # Advance level every few rounds based on performance
-    if state.rounds_completed >= 5 and state.level < 6:
-        # If they've been surviving, increase difficulty
-        state.level = min(6, state.level + 1)
-        state.difficulty = difficulty_id(state.level)
+    # Warm-up: never force a target into the opening second.
+    warmup_until = int(state.get("started_ms", now_ms)) + WARMUP_MS
+    if now_ms >= state["next_target_ms"]:
+        if now_ms < warmup_until:
+            state["next_target_ms"] = warmup_until + 300
+        elif not _has_live_target(state, now_ms):
+            if _alive_at(state, now_ms) < cfg.max_objects:
+                _spawn(state, cfg, now_ms, rng, force_target=True)
+                state["next_target_ms"] = now_ms + cfg.target_every_ms
+            else:
+                state["next_target_ms"] = now_ms + 250
+        else:
+            state["next_target_ms"] = now_ms + cfg.target_every_ms
 
 
-def end_session(state: FocusSessionState) -> dict[str, Any]:
-    """Finalize a session and return the result payload."""
-    state.finished = True
-    state.game_over = True
+def _rebase_after_stall(
+    state: dict[str, Any], cfg: FocusConfig, now_ms: int
+) -> None:
+    """Drop unseeable objects and restart the timeline (no life penalty)."""
+    for obj in state["objects"]:
+        obj["outcome"] = "dropped"
+    state["objects"] = []
+    state["next_spawn_ms"] = now_ms + 350
+    state["next_target_ms"] = now_ms + 900
+    state["next_target_change_ms"] = now_ms + cfg.target_change_ms
+    state["last_advance_ms"] = now_ms
 
-    # Compute accuracy
-    accuracy_percent = (
-        round(state.accuracy_correct / state.accuracy_total * 100, 1)
-        if state.accuracy_total > 0
-        else 0
+
+def advance(
+    state: dict[str, Any],
+    now_ms: int,
+    rng: random.Random | None = None,
+) -> None:
+    """Move the run forward to ``now_ms`` (idempotent for the same instant)."""
+    if state.get("finished"):
+        return
+    if state.get("paused"):
+        # A paused run has no live clock; keep the anchor fresh.
+        state["last_advance_ms"] = now_ms
+        return
+    cfg = config_for(state["difficulty"])
+    source = _rng(rng)
+    if now_ms - int(state.get("last_advance_ms", now_ms)) > STALL_RESET_MS:
+        _rebase_after_stall(state, cfg, now_ms)
+    _resolve_falls(state, now_ms)
+    if state.get("finished"):
+        state["last_advance_ms"] = now_ms
+        return
+    _change_target_if_due(state, cfg, now_ms, source)
+    _spawn_due(state, cfg, now_ms, source)
+    state["last_advance_ms"] = now_ms
+
+
+# ---------------------------------------------------------------------------
+# Pause / resume
+# ---------------------------------------------------------------------------
+
+
+def pause(state: dict[str, Any], now_ms: int) -> None:
+    if state.get("finished") or state.get("paused"):
+        return
+    state["paused"] = True
+    state["paused_at_ms"] = now_ms
+    state["last_advance_ms"] = now_ms
+
+
+def resume(state: dict[str, Any], now_ms: int) -> None:
+    """Unfreeze and shift the whole timeline by the server-measured pause."""
+    if not state.get("paused"):
+        return
+    paused_at = int(state.get("paused_at_ms") or now_ms)
+    delta = max(0, now_ms - paused_at)
+    if delta:
+        for obj in state["objects"]:
+            obj["spawned_at_ms"] += delta
+        for key in ("next_spawn_ms", "next_target_ms", "next_target_change_ms", "started_ms"):
+            if isinstance(state.get(key), int):
+                state[key] += delta
+        state["target_changed_ms"] = int(state.get("target_changed_ms", 0)) + delta
+        state["paused_total_ms"] = int(state.get("paused_total_ms", 0)) + delta
+    state["paused"] = False
+    state["paused_at_ms"] = None
+    state["last_advance_ms"] = now_ms
+
+
+# ---------------------------------------------------------------------------
+# Taps
+# ---------------------------------------------------------------------------
+
+
+def _remember_processed(state: dict[str, Any], object_id: str) -> None:
+    ids = list(state.get("processed_ids") or [])
+    ids.append(object_id)
+    state["processed_ids"] = ids[-PROCESSED_ID_MEMORY:]
+
+
+def tap(
+    state: dict[str, Any],
+    object_id: str,
+    now_ms: int,
+    rng: random.Random | None = None,
+) -> dict[str, Any]:
+    """Validate and apply one tap. Never raises for stale/unknown ids.
+
+    Returns ``{outcome, object_id, points}`` where outcome is one of
+    ``hit``, ``wrong``, ``duplicate``, ``expired``, ``paused``, ``finished``.
+    """
+    if not isinstance(object_id, str) or not object_id.strip():
+        raise ValueError("object_id must be a non-empty string")
+    if state.get("finished"):
+        return {"outcome": "finished", "object_id": object_id, "points": 0}
+    if state.get("paused"):
+        return {"outcome": "paused", "object_id": object_id, "points": 0}
+
+    advance(state, now_ms, rng)
+    if state.get("finished"):
+        return {"outcome": "finished", "object_id": object_id, "points": 0}
+
+    if object_id in (state.get("processed_ids") or []):
+        return {"outcome": "duplicate", "object_id": object_id, "points": 0}
+
+    obj = next((o for o in state["objects"] if o["id"] == object_id), None)
+    if obj is None:
+        # Fell (and was resolved) before this tap landed, or never existed.
+        return {"outcome": "expired", "object_id": object_id, "points": 0}
+    if obj["spawned_at_ms"] > now_ms:
+        # Scheduled shape tapped before it entered the play area.
+        return {"outcome": "too_early", "object_id": object_id, "points": 0}
+
+    cfg = config_for(state["difficulty"])
+    state["objects"] = [o for o in state["objects"] if o["id"] != object_id]
+    _remember_processed(state, object_id)
+    state["accuracy_total"] += 1
+
+    if not is_target_object(obj):
+        state["wrong_taps"] += 1
+        state["combo"] = 0
+        return {"outcome": "wrong", "object_id": object_id, "points": 0}
+
+    state["hits"] += 1
+    state["accuracy_correct"] += 1
+    state["combo"] += 1
+    state["best_combo"] = max(int(state.get("best_combo", 0)), state["combo"])
+    points = cfg.hit_points + min(state["combo"], cfg.max_combo_bonus)
+    state["score"] += points
+    return {"outcome": "hit", "object_id": object_id, "points": points}
+
+
+# ---------------------------------------------------------------------------
+# Scoring / results
+# ---------------------------------------------------------------------------
+
+
+def accuracy_percent(state: dict[str, Any]) -> float:
+    return _accuracy(state)
+
+
+def xp_for_run(
+    *, score: int, accuracy_percent: float, hits: int, difficulty: str
+) -> int:
+    """XP from server-owned counters (client-submitted score is never used)."""
+    cfg = config_for(difficulty)
+    base = max(0, score) // 15
+    accuracy_bonus = min(12, int(max(0.0, accuracy_percent) // 10))
+    hit_bonus = min(20, max(0, hits))
+    return max(1, int((base + accuracy_bonus + hit_bonus) * cfg.xp_multiplier))
+
+
+def finish(state: dict[str, Any], now_ms: int) -> dict[str, Any]:
+    """End the run (if needed) and return the persisted result payload."""
+    if not state.get("finished"):
+        _end(state, now_ms)
+    if state.get("result"):
+        return state["result"]
+    cfg = config_for(state["difficulty"])
+    accuracy = accuracy_percent(state)
+    xp = xp_for_run(
+        score=int(state.get("score", 0)),
+        accuracy_percent=accuracy,
+        hits=int(state.get("hits", 0)),
+        difficulty=cfg.id,
     )
-
+    won = int(state.get("score", 0)) >= cfg.win_score
+    started = int(state.get("started_ms", now_ms))
+    played_ms = max(0, int(state.get("ended_ms") or now_ms) - started - int(state.get("paused_total_ms", 0)))
     result = {
-        "session_id": state.session_id,
-        "game_type": state.game_type,
-        "difficulty": state.difficulty,
-        "level": state.level,
-        "score": state.score,
-        "time_remaining": max(0, state.time_remaining),
-        "lives": max(0, state.lives),
-        "combo": state.best_combo,
-        "highest_round": state.highest_round,
-        "accuracy_percent": accuracy_percent,
-        "best_combo": state.best_combo,
-        "rounds_completed": state.rounds_completed,
-        "game_over": state.game_over,
-        "finished": True,
+        "outcome": "win" if won else "loss",
+        "score": int(state.get("score", 0)),
+        "xp_earned": xp,
+        "accuracy_percent": accuracy,
+        "hits": int(state.get("hits", 0)),
+        "missed_targets": int(state.get("missed_targets", 0)),
+        "wrong_taps": int(state.get("wrong_taps", 0)),
+        "best_combo": int(state.get("best_combo", 0)),
+        "duration_ms": played_ms,
+        "difficulty": cfg.id,
     }
-
+    state["result"] = result
     return result
 
 
 # ---------------------------------------------------------------------------
-# XP computation (reuse pattern from other games)
+# Public view
 # ---------------------------------------------------------------------------
 
-def xp_for_focus_rush(
-    score: int,
-    accuracy_percent: float,
-    best_combo: int,
-    rounds_completed: int,
-    level: int,
-) -> int:
-    """Compute XP earned for a completed Focus Rush session.
 
-    XP formula:
-    - Base: score / 10 (per 10 points = 1 XP)
-    - Accuracy bonus: floor(accuracy_percent / 5) capped at 10
-    - Combo bonus: best_combo // 2 capped at 5
-    - Round completion: 5 * rounds_completed capped at 25
-    - Difficulty multiplier: 1.0 for level_1, 1.2 for level_2, 1.4 for level_3, etc.
-    """
-    base_xp = score // 10
-    accuracy_bonus = min(10, int(accuracy_percent // 5))
-    combo_bonus = min(5, best_combo // 2)
-    round_bonus = min(25, 5 * rounds_completed)
+def public_objects(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Only what the client needs to animate and hit-test an object."""
+    return [
+        {
+            "id": obj["id"],
+            "color": obj["color"],
+            "shape": obj["shape"],
+            "x": obj["x"],
+            "spawned_at_ms": obj["spawned_at_ms"],
+            "fall_ms": obj["fall_ms"],
+            "stale": bool(obj.get("stale")),
+        }
+        for obj in state.get("objects", [])
+    ]
 
-    # Difficulty multiplier
-    level_multipliers = {
-        "level_1": 1.0,
-        "level_2": 1.2,
-        "level_3": 1.4,
-        "level_4": 1.6,
-        "level_5": 1.8,
-        "level_6": 2.0,
+
+def public_view(
+    state: dict[str, Any],
+    now_ms: int,
+    *,
+    session_id: str,
+    last_tap: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """State the frontend renders. Derives nothing the server doesn't own."""
+    cfg = config_for(state["difficulty"])
+    target = state["target"]
+    result = state.get("result")
+    return {
+        "session_id": session_id,
+        "game_type": GAME_TYPE,
+        "difficulty": cfg.id,
+        "target": {"color": target["color"], "shape": target["shape"]},
+        "instruction": instruction_for(target),
+        "score": int(state.get("score", 0)),
+        "lives": int(state.get("lives", MAX_LIVES)),
+        "max_lives": MAX_LIVES,
+        "combo": int(state.get("combo", 0)),
+        "best_combo": int(state.get("best_combo", 0)),
+        "hits": int(state.get("hits", 0)),
+        "missed": int(state.get("missed_targets", 0)),
+        "wrong_taps": int(state.get("wrong_taps", 0)),
+        "targets_spawned": int(state.get("targets_spawned", 0)),
+        "accuracy_percent": accuracy_percent(state),
+        "objects": public_objects(state),
+        "config": public_config(cfg.id),
+        "now_ms": int(now_ms),
+        "target_changes_in_ms": max(
+            0, int(state.get("next_target_change_ms", now_ms)) - now_ms
+        ),
+        "paused": bool(state.get("paused")),
+        "finished": bool(state.get("finished")),
+        "game_over": bool(state.get("game_over")),
+        "result": result,
+        "last_tap": last_tap,
     }
-    multiplier = level_multipliers.get(level, 1.0)
-
-    total = int((base_xp + accuracy_bonus + combo_bonus + round_bonus) * multiplier)
-    return max(1, total)  # at least 1 XP for playing
 
 
-# ---------------------------------------------------------------------------
-# Shared target for multiplayer (like perfect_second.match_target_ms)
-# ---------------------------------------------------------------------------
-
-def focus_rush_shared_target_ms(match_id: str, difficulty: str) -> int:
-    """Deterministic shared target for a multiplayer match.
-
-    Same as perfect_second.match_target_ms: every seat in one match
-    resolves the same target without coordination races.
-    """
-    import hashlib
-    digest = hashlib.sha256(f"focus_rush:{match_id}:{difficulty}".encode("ascii")).digest()
-    index = int.from_bytes(digest[:4], "big") % 6  # 6 difficulty levels
-    return index + 1  # level_1 through level_6
+def iter_targets(objects: Iterable[dict[str, Any]]) -> Iterable[dict[str, Any]]:
+    return (obj for obj in objects if is_target_object(obj))

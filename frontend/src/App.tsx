@@ -378,12 +378,13 @@ export default function App() {
         )}
         {route.name === 'play-match' && route.gameId === 'focus_rush' && (
           <FocusPlayScreen
+            key={route.sessionId}
             ctx={ctx}
             sessionId={route.sessionId}
-            _matchId={route.matchId}
-            _onBackToMatch={() => setRoute({ name: 'match', matchId: route.matchId })}
+            matchId={route.matchId}
+            onBackToMatch={() => setRoute({ name: 'match', matchId: route.matchId })}
             onExit={() => setRoute({ name: 'match', matchId: route.matchId })}
-            _onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'focus_rush', sessionId })}
+            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'focus_rush', sessionId })}
           />
         )}
         {route.name === 'play' && route.gameId === 'color_sequence' && (
@@ -439,11 +440,11 @@ export default function App() {
         )}
         {route.name === 'play' && route.gameId === 'focus_rush' && (
           <FocusPlayScreen
+            key={route.sessionId}
             ctx={ctx}
-            _onBackToMatch={() => setRoute({ name: "games" })}
             sessionId={route.sessionId}
             onExit={() => setRoute({ name: 'games' })}
-            _onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'focus_rush', sessionId })}
+            onReplay={(sessionId) => setRoute({ name: 'play', gameId: 'focus_rush', sessionId })}
           />
         )}
         {route.name === 'leaderboard' && <LeaderboardScreen ctx={ctx} />}

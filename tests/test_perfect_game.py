@@ -622,10 +622,10 @@ def test_perfect_routes_and_catalog(monkeypatch):
     assert entry["xp_rules"]["hard"]["perfect"] == 20
 
 
-def test_catalog_lists_six_playable_games():
+def test_catalog_lists_playable_games():
     ids = [e["id"] for e in CATALOG if e["playable"]]
     assert ids == ["number_guessing", "color_sequence", "reflex_rush",
-                   "perfect_second", "maze_race", "chess"]
+                   "perfect_second", "maze_race", "chess", "focus_rush"]
     assert GAME_TYPE_PERFECT_SECOND == "perfect_second"
     maze_entry = next(e for e in CATALOG if e["id"] == "maze_race")
     assert maze_entry["playable"] is True

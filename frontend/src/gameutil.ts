@@ -18,7 +18,7 @@ export function difficultyDisplayName(gameId: string, id: string): string {
 /** One-line difficulty summary, per game (attempts vs rounds). */
 export function difficultySub(
   gameId: string,
-  d: { id: string; max_attempts: number; start_length?: number; wait_min_ms?: number; wait_max_ms?: number; target_min_ms?: number; target_max_ms?: number; target_step_ms?: number; rows?: number; cols?: number; branching?: number; par_time_s?: number },
+  d: { id: string; max_attempts: number; start_length?: number; wait_min_ms?: number; wait_max_ms?: number; target_min_ms?: number; target_max_ms?: number; target_step_ms?: number; rows?: number; cols?: number; branching?: number; par_time_s?: number; fall_ms?: number; spawn_interval_ms?: number; colors?: number; shapes?: number },
 ): string {
   if (gameId === 'color_sequence') {
     return `Up to ${d.max_attempts} rounds · starts at ${d.start_length ?? '?'}`;
@@ -39,11 +39,16 @@ export function difficultySub(
     return `Stop on the target`;
   }
   if (gameId === 'focus_rush') {
-    // Display Easy/Medium/Hard only (level_1-6 mapping removed)
-    if (d.id === 'easy') return 'Easy';
-    if (d.id === 'medium') return 'Medium';
-    if (d.id === 'hard') return 'Hard';
-    return 'Level ' + d.id;
+    if (d.fall_ms !== undefined) {
+      const fall = `${(d.fall_ms / 1000).toFixed(1)}s fall`;
+      const spawn = d.spawn_interval_ms !== undefined ? ` · ${d.spawn_interval_ms}ms spawns` : '';
+      const variety =
+        d.colors !== undefined && d.shapes !== undefined
+          ? ` · ${d.colors} colours / ${d.shapes} shapes`
+          : '';
+      return `${fall}${spawn}${variety}`;
+    }
+    return 'Falling shapes · 3 lives';
   }
   if (gameId === 'maze_race') {
     if (d.rows !== undefined && d.cols !== undefined) {
@@ -128,6 +133,7 @@ export function gameTitle(gameType: string): string {
   if (gameType === 'perfect_second') return 'Perfect Second';
   if (gameType === 'maze_race') return 'Maze Race';
   if (gameType === 'chess') return 'Chess';
+  if (gameType === 'focus_rush') return 'Focus Rush';
   return gameType;
 }
 
@@ -141,10 +147,14 @@ export function resumeHint(game: {
   target_ms?: number;
   difficulty?: string;
   playerColor?: string;
+  lives?: number;
+  score?: number;
 }): string {
   if (game.game_type === 'color_sequence') return `Lv ${game.level ?? '?'}`;
   if (game.game_type === 'reflex_rush')
     return `${game.rounds_played ?? 0}/${game.rounds_total ?? 5}`;
+  if (game.game_type === 'focus_rush')
+    return `❤️ ${game.lives ?? 3} · ${game.score ?? 0} pts`;
   if (game.game_type === 'perfect_second')
     return game.target_ms !== undefined ? `🎯 ${formatSeconds(game.target_ms, game.difficulty ?? 'hard')}` : '🎯 ready';
   if (game.game_type === 'chess') return game.playerColor ?? '';

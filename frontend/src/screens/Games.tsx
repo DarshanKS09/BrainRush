@@ -146,15 +146,7 @@ function DifficultyChips({
   difficulty: string;
   setDifficulty: (d: string) => void;
 }) {
-  // For Focus Rush, only show Easy/Medium/Hard (ignore level_1-6 from catalog)
-  const focusRush = game.id === 'focus_rush';
-  const difficulties = focusRush
-    ? [
-        { id: 'easy', max_attempts: 999 },
-        { id: 'medium', max_attempts: 999 },
-        { id: 'hard', max_attempts: 999 },
-      ]
-    : game.difficulties;
+  const difficulties = game.difficulties;
   return (
     <div className="mt-2 grid grid-cols-3 gap-1.5">
       {difficulties.map((d) => {

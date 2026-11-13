@@ -24,7 +24,7 @@ export interface DashboardData {
   active_games: ActiveGame[];
 }
 
-export type ActiveGame = GameState | ColorState | ReflexState | PerfectState | MazeState | ChessState;
+export type ActiveGame = GameState | ColorState | ReflexState | PerfectState | MazeState | ChessState | FocusState;
 
 export interface DifficultyInfo {
   id: string;
@@ -40,6 +40,12 @@ export interface DifficultyInfo {
   cols?: number;
   branching?: number;
   par_time_s?: number;
+  fall_ms?: number;
+  spawn_interval_ms?: number;
+  max_objects?: number;
+  target_change_ms?: number;
+  colors?: number;
+  shapes?: number;
 }
 
 export interface GameXpRules {
@@ -286,6 +292,78 @@ export interface MazeState {
   result: MazeResult | null;
 }
 
+// --- Focus Rush (falling-shapes arcade) ---
+
+export type FocusColor = 'red' | 'blue' | 'green' | 'yellow' | 'purple';
+export type FocusShape = 'circle' | 'square' | 'triangle' | 'diamond' | 'star';
+
+export interface FocusObject {
+  id: string;
+  color: FocusColor;
+  shape: FocusShape;
+  /** Horizontal centre as a fraction of the play-area width (0..1). */
+  x: number;
+  spawned_at_ms: number;
+  fall_ms: number;
+  /** Set when the target changed while this object was mid-flight. */
+  stale: boolean;
+}
+
+export interface FocusConfig {
+  fall_ms: number;
+  spawn_interval_ms: number;
+  max_objects: number;
+  target_change_ms: number;
+  max_lives: number;
+  colors: string[];
+  shapes: string[];
+}
+
+export interface FocusTapFeedback {
+  object_id: string;
+  points: number;
+  outcome: 'hit' | 'wrong' | 'duplicate' | 'expired' | 'too_early' | 'paused' | 'finished';
+}
+
+export interface FocusResult {
+  outcome: 'win' | 'loss';
+  score: number;
+  xp_earned: number;
+  accuracy_percent: number;
+  hits: number;
+  missed_targets: number;
+  wrong_taps: number;
+  best_combo: number;
+  duration_ms: number;
+}
+
+export interface FocusState {
+  session_id: string;
+  game_type: string;
+  difficulty: string;
+  target: { color: FocusColor; shape: FocusShape };
+  instruction: string;
+  score: number;
+  lives: number;
+  max_lives: number;
+  combo: number;
+  best_combo: number;
+  hits: number;
+  missed: number;
+  wrong_taps: number;
+  targets_spawned: number;
+  accuracy_percent: number;
+  objects: FocusObject[];
+  config: FocusConfig;
+  now_ms: number;
+  target_changes_in_ms: number;
+  paused: boolean;
+  finished: boolean;
+  game_over: boolean;
+  result: FocusResult | null;
+  last_tap: FocusTapFeedback | null;
+}
+
 export interface ReferralLink {
   code: string;
   link: string | null;
@@ -503,10 +581,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ value, client_guess_id: clientGuessId }),
     }),
-  focus_tap: (initData: string, sessionId: string, color: string, shape: string, clientMoveId: string) =>
-    request<GameState>(`/api/sessions/${sessionId}/focus-tap`, initData, {
+  focusState: (initData: string, sessionId: string) =>
+    request<FocusState>(`/api/sessions/${sessionId}`, initData),
+  focusTap: (initData: string, sessionId: string, objectId: string, clientMoveId: string) =>
+    request<FocusState>(`/api/sessions/${sessionId}/focus-tap`, initData, {
       method: 'POST',
-      body: JSON.stringify({ color, shape, client_move_id: clientMoveId }),
+      body: JSON.stringify({ object_id: objectId, client_move_id: clientMoveId }),
+    }),
+  focusPause: (initData: string, sessionId: string, paused: boolean) =>
+    request<FocusState>(`/api/sessions/${sessionId}/focus-pause`, initData, {
+      method: 'POST',
+      body: JSON.stringify({ paused }),
     }),
   move: (initData: string, sessionId: string, color: number, clientMoveId: string) =>
     request<ColorState>(`/api/sessions/${sessionId}/move`, initData, {
