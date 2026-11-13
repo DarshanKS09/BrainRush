@@ -15,6 +15,7 @@ import type { WebAppContext } from '../telegram';
 import { GameTile } from '../components/GameTile';
 import { ErrorNotice, Loading, SectionTitle } from '../components/ui';
 import { haptic } from '../telegram';
+import { playSound } from '../audio';
 
 const MODE_LABELS: Record<string, string> = {
   duel: '1v1 Duel',
@@ -60,6 +61,7 @@ export function GamesScreen({
     setStarting(true);
     setStartError('');
     try {
+      playSound('start');
       const state = await api.start(ctx.initData, selected.id, difficulty);
       haptic('success');
       onStart(selected.id, state.session_id);
@@ -154,7 +156,10 @@ function DifficultyChips({
         return (
           <button
             key={d.id}
-            onClick={() => setDifficulty(d.id)}
+            onClick={() => {
+              playSound('uiTap');
+              setDifficulty(d.id);
+            }}
             aria-pressed={active}
             className={`rounded-xl px-2 py-1.5 text-xs font-bold transition-all ${
               active

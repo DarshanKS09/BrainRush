@@ -4,6 +4,7 @@ import type { WebAppContext } from '../telegram';
 import { MatchSubmitBanner } from '../components/MatchSubmit';
 import { ErrorNotice, Loading } from '../components/ui';
 import { haptic } from '../telegram';
+import { playColorTone, playSound, useAudioScope, useOutcomeSound } from '../audio';
 
 /** Gap between a completed round and the next level's playback. */
 export const ROUND_TRANSITION_MS = 2000;
@@ -15,27 +16,6 @@ const COLORS = [
   { name: 'Blue', base: 'bg-sky-700', lit: 'bg-sky-200 scale-[1.06] brightness-150 ring-4 ring-sky-100/80 shadow-[0_0_64px_rgba(125,211,252,1)]' },
   { name: 'Yellow', base: 'bg-amber-600', lit: 'bg-amber-100 scale-[1.06] brightness-150 ring-4 ring-amber-100/80 shadow-[0_0_64px_rgba(252,211,77,1)]' },
 ];
-const FREQS = [261.6, 329.6, 392.0, 523.3];
-
-function beep(index: number, ms: number): void {
-  try {
-    const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!Ctx) return;
-    const ctx = new Ctx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.value = FREQS[index] ?? 440;
-    gain.gain.setValueAtTime(0.12, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + ms / 1000);
-    osc.connect(gain).connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + ms / 1000);
-    void ctx.resume?.();
-  } catch {
-    /* audio is decoration only */
-  }
-}
 
 export function ColorPlayScreen({
   ctx,
@@ -66,6 +46,9 @@ export function ColorPlayScreen({
   // displayed progress immediately (optimistic); the server view remains
   // authoritative and every terminal/error path resets this to 0.
   const [pending, setPending] = useState(0);
+  useAudioScope();
+  const outcome = view?.finished ? (view.result?.outcome ?? null) : null;
+  useOutcomeSound(sessionId, outcome, outcome === 'win' ? 'win' : 'loss');
   const viewRef = useRef<ColorState | null>(null);
   viewRef.current = view;
   const playedLevel = useRef<string>('');
@@ -141,7 +124,7 @@ export function ColorPlayScreen({
       timers.push(
         setTimeout(() => {
           setFlash(color);
-          beep(color, playbackMs);
+          playColorTone(color);
         }, 450 + i * step),
       );
       timers.push(setTimeout(() => setFlash(null), 450 + i * step + playbackMs));
@@ -191,7 +174,10 @@ export function ColorPlayScreen({
           // the new level, then pause for the transition.
           queueRef.current = [];
           setPending(0);
+          playSound('levelComplete');
           setTransitionMs(ROUND_TRANSITION_MS);
+        } else {
+          playSound('correct');
         }
       }
     } finally {
@@ -209,6 +195,7 @@ export function ColorPlayScreen({
       setFlash(color);
       if (tapFlashTimer.current) clearTimeout(tapFlashTimer.current);
       tapFlashTimer.current = setTimeout(() => setFlash(null), 180);
+      playSound('uiTap');
       queueRef.current.push({ color, id: newClientGuessId() });
       setPending((p) => p + 1);
       void pump();
@@ -319,7 +306,10 @@ export function ColorPlayScreen({
             <p className="mt-2 text-xs text-slate-400">🎨 Personal best: level {best}</p>
           )}
           <button
-            onClick={() => setStarted(true)}
+            onClick={() => {
+              playSound('start');
+              setStarted(true);
+            }}
             className="mt-4 w-full rounded-xl bg-gradient-to-r from-neon-purple to-neon-cyan py-3 text-base font-bold text-white shadow-glow active:scale-[0.99]"
           >
             ▶ Start Game

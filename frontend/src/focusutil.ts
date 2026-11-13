@@ -33,7 +33,8 @@ export function clockOffsetFromSample(
   receivedAtMs: number,
 ): number {
   if (!Number.isFinite(serverNowMs) || serverNowMs <= 0) return 0;
-  if (!Number.isFinite(sentAtMs) || !Number.isFinite(receivedAtMs)) return 0;
+  if (!Number.isFinite(sentAtMs) || sentAtMs <= 0) return 0;
+  if (!Number.isFinite(receivedAtMs) || receivedAtMs < sentAtMs) return 0;
   return serverNowMs - Math.round((sentAtMs + receivedAtMs) / 2);
 }
 

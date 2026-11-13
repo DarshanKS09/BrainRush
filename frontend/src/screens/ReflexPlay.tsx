@@ -14,6 +14,7 @@ import {
 import { ErrorNotice, Loading } from '../components/ui';
 import { MatchSubmitBanner } from '../components/MatchSubmit';
 import { haptic } from '../telegram';
+import { playSound, useAudioScope, useOutcomeSound } from '../audio';
 
 type Phase = 'waiting' | 'active';
 
@@ -46,6 +47,9 @@ export function ReflexPlayScreen({
   const [submitting, setSubmitting] = useState(false);
   const [replaying, setReplaying] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
+  useAudioScope();
+  const outcome = view?.finished ? (view.result?.outcome ?? null) : null;
+  useOutcomeSound(sessionId, outcome, outcome === 'win' ? 'win' : 'loss');
 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeSince = useRef(0);
@@ -99,12 +103,14 @@ export function ReflexPlayScreen({
       timer.current = setTimeout(() => {
         activeSince.current = performance.now();
         setPhase('active');
+        playSound('countdown');
       }, ms);
     },
     [wait],
   );
 
   const begin = () => {
+    playSound('start');
     setStarted(true);
     setRounds([]);
     setLastMs(null);
@@ -160,6 +166,7 @@ export function ReflexPlayScreen({
       setLastMs(null);
       setLastFalse(true);
       haptic('error');
+      playSound('falseStart');
       advance(next);
       return;
     }
@@ -170,6 +177,7 @@ export function ReflexPlayScreen({
     setLastMs(ms);
     setLastFalse(false);
     haptic('light');
+    playSound('uiTap');
     advance(next);
   }, [advance, rounds, submitting, view]);
 

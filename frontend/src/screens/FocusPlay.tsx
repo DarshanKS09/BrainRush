@@ -9,6 +9,7 @@ import {
 } from '../api';
 import type { WebAppContext } from '../telegram';
 import { haptic } from '../telegram';
+import { playSound, useAudioScope, useOutcomeSound } from '../audio';
 import { ErrorNotice, Loading } from '../components/ui';
 import { MatchSubmitBanner } from '../components/MatchSubmit';
 import {
@@ -126,6 +127,9 @@ export default function FocusPlayScreen({
   const [started, setStarted] = useState(false);
   const [busy, setBusy] = useState<'pause' | 'resume' | 'exit' | null>(null);
   const [replaying, setReplaying] = useState(false);
+  useAudioScope();
+  const outcome = view?.finished ? (view.result?.outcome ?? null) : null;
+  useOutcomeSound(sessionId, outcome, outcome === 'win' ? 'focusWin' : 'focusLoss');
 
   const areaRef = useRef<HTMLDivElement | null>(null);
   const nodeRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -143,11 +147,22 @@ export default function FocusPlayScreen({
   const popupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shownChangeRef = useRef(0);
   const removalTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
+  const prevLivesRef = useRef<number | null>(null);
 
   // Mirrors so the animation/poll callbacks never need to re-subscribe.
   useEffect(() => {
     objectsRef.current = objects;
   }, [objects]);
+
+  // Low-lives warning: fires once when a life is lost and only one remains.
+  useEffect(() => {
+    if (!view) return;
+    const prev = prevLivesRef.current;
+    prevLivesRef.current = view.lives;
+    if (prev !== null && view.lives < prev && view.lives > 0 && view.lives === 1) {
+      playSound('lowLives');
+    }
+  }, [view?.lives]);
   useEffect(() => {
     viewRef.current = view;
     pausedRef.current = !view || view.paused || view.finished;
@@ -186,6 +201,7 @@ export default function FocusPlayScreen({
       transition.id !== shownChangeRef.current
     ) {
       shownChangeRef.current = transition.id;
+      playSound('focusTargetChange');
       const durationMs = Math.max(500, transition.until_ms - next.now_ms);
       setTargetChange({
         id: transition.id,
@@ -245,6 +261,7 @@ export default function FocusPlayScreen({
         if (isTargetObject(obj, current.target)) {
           showFeedback('miss', 'Missed target −1 life');
           haptic('error');
+          playSound('missedTarget');
         }
       }
       const node = nodeRefs.current.get(obj.id);
@@ -339,6 +356,7 @@ export default function FocusPlayScreen({
       const state = await runRequest(() => api.focusPause(ctx.initData, sessionId, false));
       if (state) {
         setStarted(true);
+        playSound('start');
         showFeedback('info', 'Go! Tap the matching shapes.');
       }
     } catch (e) {
@@ -406,6 +424,7 @@ export default function FocusPlayScreen({
     if (obj.spawned_at_ms > Date.now() + offsetRef.current) return;
     tappedRef.current.add(obj.id);
     const matching = isTargetObject(obj, current.target);
+    playSound('metallicTap');
     showFeedback(matching ? 'hit' : 'wrong', matching ? 'CORRECT' : 'WRONG TARGET −1 life');
     haptic(matching ? 'light' : 'error');
     const node = nodeRefs.current.get(obj.id);
@@ -422,10 +441,13 @@ export default function FocusPlayScreen({
       );
       const tap = state?.last_tap;
       if (tap) {
-        if (tap.outcome === 'hit') showFeedback('hit', `CORRECT +${tap.points}`);
-        else if (tap.outcome === 'wrong') {
+        if (tap.outcome === 'hit') {
+          showFeedback('hit', `CORRECT +${tap.points}`);
+          playSound('focusCorrect');
+        } else if (tap.outcome === 'wrong') {
           showFeedback('wrong', 'WRONG TARGET −1 life');
           haptic('error');
+          playSound('focusWrong');
         } else if (tap.outcome === 'transition') {
           showFeedback('info', 'Get ready!');
         } else if (tap.outcome === 'expired') {

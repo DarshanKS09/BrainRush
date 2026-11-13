@@ -5,6 +5,7 @@ import { formatSeconds, perfectVerdict } from '../gameutil';
 import { ErrorNotice, Loading } from '../components/ui';
 import { MatchSubmitBanner } from '../components/MatchSubmit';
 import { haptic } from '../telegram';
+import { playSound, useAudioScope, useOutcomeSound } from '../audio';
 
 type Phase = 'ready' | 'running';
 
@@ -35,6 +36,11 @@ export function PerfectPlayScreen({
   const [elapsed, setElapsed] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [replaying, setReplaying] = useState(false);
+  useAudioScope();
+  const outcome = view?.finished ? (view.result?.outcome ?? null) : null;
+  const perfect = view?.finished && (view.result?.accuracy_percent ?? 0) >= 100;
+  const resultSound = outcome === 'win' ? (perfect ? 'perfectWin' : 'win') : 'loss';
+  useOutcomeSound(sessionId, outcome, resultSound);
 
   // Monotonic clock base. rAF is display-only; the STOP handler reads
   // performance.now() directly, so background throttling cannot skew it.
@@ -83,6 +89,7 @@ export function PerfectPlayScreen({
     setPhase('running');
     raf.current = requestAnimationFrame(tick);
     haptic('light');
+    playSound('start');
   }, [tick]);
 
   // Hidden tabs freeze rAF; the monotonic base is unaffected, so just
@@ -105,6 +112,7 @@ export function PerfectPlayScreen({
     const finalMs = performance.now() - startedAt.current;
     submitted.current = true;
     stopLoop();
+    playSound('stop');
     setSubmitting(true);
     setNotice('');
     try {

@@ -10,6 +10,7 @@ import { formatMs } from '../gameutil';
 import { ErrorNotice, Loading } from '../components/ui';
 import { MatchSubmitBanner } from '../components/MatchSubmit';
 import { haptic } from '../telegram';
+import { playSound, useAudioScope, useOutcomeSound } from '../audio';
 
 const CELL_SIZE = 40;
 const MOVE_ANIMATION_MS = 220;
@@ -59,6 +60,9 @@ export function MazePlayScreen({
   const [replaying, setReplaying] = useState(false);
   const [showDpad, setShowDpad] = useState(true);
   const [phase, setPhase] = useState<Phase>('intro');
+  useAudioScope();
+  const outcome = view?.finished ? 'win' : null;
+  useOutcomeSound(sessionId, outcome, 'win');
 
   // Animation state (kept out of React render loop): interpolated player
   // position for smooth movement between cells.
@@ -232,7 +236,11 @@ export function MazePlayScreen({
     async (direction: string) => {
       const v = viewRef.current;
       if (!v || v.finished || busy || phase !== 'playing' || moveLockRef.current) return;
-      if (!v.valid_directions.includes(direction)) return;
+      if (!v.valid_directions.includes(direction)) {
+        playSound('blocked');
+        return;
+      }
+      playSound('move');
       moveLockRef.current = true;
       setBusy(true);
       setNotice('');
@@ -313,6 +321,7 @@ export function MazePlayScreen({
         }
         setNotice(e instanceof Error ? e.message : 'Move failed. Try again.');
         haptic('error');
+        playSound('wrong');
       } finally {
         setBusy(false);
         moveLockRef.current = false;
@@ -534,7 +543,10 @@ export function MazePlayScreen({
             <p>🎯 Reach the exit · fewer moves = more XP</p>
           </div>
           <button
-            onClick={() => setPhase('playing')}
+            onClick={() => {
+              playSound('start');
+              setPhase('playing');
+            }}
             className="mt-5 w-full rounded-xl bg-gradient-to-r from-neon-purple to-neon-cyan py-3 text-base font-bold text-white shadow-glow active:scale-[0.99]"
           >
             ▶ Start Race

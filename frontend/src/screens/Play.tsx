@@ -6,6 +6,7 @@ import { AttemptPips, GuessHistory, Keypad } from '../components/game';
 import { MatchSubmitBanner } from '../components/MatchSubmit';
 import { ErrorNotice, Loading } from '../components/ui';
 import { haptic } from '../telegram';
+import { playSound, useAudioScope, useOutcomeSound } from '../audio';
 
 export function PlayScreen({
   ctx,
@@ -27,6 +28,9 @@ export function PlayScreen({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  useAudioScope();
+  const outcome = state?.finished ? (state.result?.outcome ?? null) : null;
+  useOutcomeSound(sessionId, outcome, outcome === 'win' ? 'win' : 'loss');
   const stateRef = useRef<GameState | null>(null);
   stateRef.current = state;
 
@@ -39,6 +43,9 @@ export function PlayScreen({
   }, [ctx.initData, sessionId]);
 
   useEffect(load, [load]);
+  useEffect(() => {
+    playSound('start');
+  }, []);
 
   const submit = useCallback(
     async (raw: string) => {
@@ -51,7 +58,10 @@ export function PlayScreen({
         setState(next);
         setBuffer('');
         if (next.finished) haptic(next.result?.outcome === 'win' ? 'success' : 'error');
-        else haptic('light');
+        else {
+          haptic('light');
+          playSound('wrong');
+        }
       } catch (e) {
         setNotice(e instanceof Error ? e.message : 'Guess failed. Try again.');
       } finally {
@@ -63,6 +73,7 @@ export function PlayScreen({
 
   const onKey = useCallback(
     (key: string) => {
+      playSound('uiTap');
       if (key === 'enter') {
         void submit(buffer);
         return;
