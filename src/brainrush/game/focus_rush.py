@@ -66,6 +66,13 @@ TARGET_CHANGE_LEAD_MS = 500
 # change on its next poll (~0.9 s), so this is slightly longer than the
 # intended 1.5-2 s popup to keep the full window visible.
 TARGET_TRANSITION_MS = 2_400
+# A tap is sent when the player's finger lands, but the request needs a round
+# trip to arrive. The bottom edge is when an object *starts* being late, so a
+# tap that was made in time must not be turned into a missed target by network
+# latency: objects stay tappable for this long past the bottom before the miss
+# is charged. They are hidden from the client at the bottom, so this only
+# forgives taps already in flight - an ignored target still costs one life.
+TAP_GRACE_MS = 400
 
 
 @dataclass(frozen=True)
@@ -285,7 +292,7 @@ def _end(state: dict[str, Any], now_ms: int) -> None:
 def _resolve_falls(state: dict[str, Any], now_ms: int) -> None:
     still_falling: list[dict[str, Any]] = []
     for obj in state["objects"]:
-        if obj["spawned_at_ms"] + obj["fall_ms"] > now_ms:
+        if obj["spawned_at_ms"] + obj["fall_ms"] + TAP_GRACE_MS > now_ms:
             still_falling.append(obj)
             continue
         if is_target_object(obj):
@@ -438,7 +445,10 @@ def _spawn_due(
     while state["next_spawn_ms"] <= horizon and spawned < MAX_CATCHUP_SPAWNS:
         at_ms = state["next_spawn_ms"]
         # Far behind (freeze/tab switch): don't dump a backlog of shapes.
-        if now_ms - at_ms > cfg.spawn_interval_ms * 2:
+        # Never schedule a shape in the past: a catch-up after a slow poll
+        # would otherwise add objects that are already falling (or already
+        # due) and charge the player for shapes they were never shown.
+        if at_ms < now_ms:
             at_ms = now_ms
         gap = cfg.spawn_interval_ms * (
             1 + rng.uniform(-cfg.spawn_jitter, cfg.spawn_jitter)
@@ -678,8 +688,13 @@ def finish(state: dict[str, Any], now_ms: int) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def public_objects(state: dict[str, Any]) -> list[dict[str, Any]]:
-    """Only what the client needs to animate and hit-test an object."""
+def public_objects(state: dict[str, Any], now_ms: int) -> list[dict[str, Any]]:
+    """Only what the client needs to animate and hit-test an object.
+
+    Objects past the bottom edge are not rendered any more, even while they
+    sit in the tap-grace window: the player never sees a shape below the line
+    and cannot tap it from the screen.
+    """
     return [
         {
             "id": obj["id"],
@@ -691,6 +706,7 @@ def public_objects(state: dict[str, Any]) -> list[dict[str, Any]]:
             "stale": bool(obj.get("stale")),
         }
         for obj in state.get("objects", [])
+        if obj["spawned_at_ms"] + obj["fall_ms"] > now_ms
     ]
 
 
@@ -732,7 +748,7 @@ def public_view(
         "wrong_taps": int(state.get("wrong_taps", 0)),
         "targets_spawned": int(state.get("targets_spawned", 0)),
         "accuracy_percent": accuracy_percent(state),
-        "objects": public_objects(state),
+        "objects": public_objects(state, now_ms),
         "config": public_config(cfg.id),
         "now_ms": int(now_ms),
         "target_changes_in_ms": max(

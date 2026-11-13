@@ -214,7 +214,6 @@ function GameDetailsPanel({
                 reflex_rush: '⚡',
                 perfect_second: '⏱️',
                 maze_race: '🌀',
-                chess: '♟️',
                 memory_match: '🃏',
                 reaction_test: '🎯',
                 math_challenge: '➗',

@@ -625,11 +625,11 @@ def test_perfect_routes_and_catalog(monkeypatch):
 def test_catalog_lists_playable_games():
     ids = [e["id"] for e in CATALOG if e["playable"]]
     assert ids == ["number_guessing", "color_sequence", "reflex_rush",
-                   "perfect_second", "maze_race", "chess", "focus_rush"]
+                   "perfect_second", "maze_race", "focus_rush"]
     assert GAME_TYPE_PERFECT_SECOND == "perfect_second"
     maze_entry = next(e for e in CATALOG if e["id"] == "maze_race")
     assert maze_entry["playable"] is True
     assert {d["id"] for d in maze_entry["difficulties"]} == {"easy", "medium", "hard"}
-    chess_entry = next(e for e in CATALOG if e["id"] == "chess")
-    assert chess_entry["playable"] is True
-    assert {d["id"] for d in chess_entry["difficulties"]} == {"easy", "medium", "hard"}
+    # Chess was retired from the catalog; its history stays in the DB.
+    assert "chess" not in ids
+    assert all(e["id"] != "chess" for e in CATALOG)

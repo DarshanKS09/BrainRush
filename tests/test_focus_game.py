@@ -157,16 +157,161 @@ def test_missed_target_costs_one_life_but_missed_distractor_does_not():
 
     focus.advance(state, t0 + 500, rng)
     assert state["lives"] == 3  # still airborne
+    # At the bottom edge the object is not yet charged: taps sent just before
+    # it would have blurred anyway still count (network grace window).
     focus.advance(state, t0 + 1_001, rng)
+    assert state["lives"] == 3 and state["missed_targets"] == 0
+    focus.advance(state, t0 + 1_000 + focus.TAP_GRACE_MS + 1, rng)
     assert state["lives"] == 2 and state["missed_targets"] == 1
 
     # A distractor falling out costs nothing at all.
     distractor = focus._spawn(state, cfg, t0 + 1_100, rng)
     distractor["is_target"] = False
     distractor["fall_ms"] = 500
-    focus.advance(state, t0 + 1_601, rng)
+    focus.advance(state, t0 + 1_601 + focus.TAP_GRACE_MS + 1, rng)
     assert state["lives"] == 2 and state["missed_targets"] == 1
     assert state["distractors_passed"] >= 1
+
+
+def test_tap_at_the_bottom_edge_within_the_grace_window_still_scores():
+    """A tap made while the shape is on screen must not become a miss just
+    because its request crossed the bottom boundary on the way to the server."""
+    state, rng = _started("medium")
+    cfg = focus.config_for("medium")
+    t0 = NOW + focus.WARMUP_MS + 400
+    state["objects"] = []
+    state["next_spawn_ms"] = NOW + 10**9
+    state["next_target_ms"] = NOW + 10**9
+    target = focus._spawn(state, cfg, t0, rng, force_target=True)
+    target["fall_ms"] = 2_000
+
+    # 150 ms after the bottom edge (typical mobile round trip): still a hit.
+    result = focus.tap(
+        state, target["id"], t0 + 2_000 + 150, rng
+    )
+
+    assert result["outcome"] == "hit"
+    assert result["points"] > 0
+    assert state["lives"] == 3 and state["missed_targets"] == 0
+    assert state["score"] == result["points"]
+
+
+def test_tap_after_the_grace_window_is_expired_and_never_double_charged():
+    state, rng = _started("medium")
+    cfg = focus.config_for("medium")
+    t0 = NOW + focus.WARMUP_MS + 400
+    state["objects"] = []
+    state["next_spawn_ms"] = NOW + 10**9
+    state["next_target_ms"] = NOW + 10**9
+    target = focus._spawn(state, cfg, t0, rng, force_target=True)
+    target["fall_ms"] = 1_000
+    late = t0 + 1_000 + focus.TAP_GRACE_MS + 50
+
+    focus.advance(state, late, rng)
+    assert state["lives"] == 2 and state["missed_targets"] == 1
+
+    # The late tap is inert, and nothing is charged a second time.
+    result = focus.tap(state, target["id"], late, rng)
+    assert result["outcome"] == "expired"
+    focus.advance(state, late + 500, rng)
+    assert state["lives"] == 2 and state["missed_targets"] == 1
+    assert state["wrong_taps"] == 0
+
+
+def test_simultaneous_misses_are_each_charged_exactly_once():
+    state, rng = _started("hard", seed=11)
+    cfg = focus.config_for("hard")
+    t0 = NOW + focus.WARMUP_MS + 400
+    state["objects"] = []
+    state["next_spawn_ms"] = NOW + 10**9
+    state["next_target_ms"] = NOW + 10**9
+    first = focus._spawn(state, cfg, t0, rng, force_target=True)
+    second = focus._spawn(state, cfg, t0, rng, force_target=True)
+    first["fall_ms"] = second["fall_ms"] = 1_000
+
+    resolve_at = t0 + 1_000 + focus.TAP_GRACE_MS + 1
+    focus.advance(state, resolve_at, rng)
+    focus.advance(state, resolve_at + 100, rng)
+
+    assert state["missed_targets"] == 2
+    assert state["lives"] == 1
+    assert state["objects"] == []
+
+
+def test_tapping_every_target_never_loses_a_life_in_medium():
+    """Regression for random life loss: a player who taps every target as it
+    appears must keep all three lives, however long the run is."""
+    rng = random.Random(5)
+    state = focus.new_state("medium", NOW, rng)
+    focus.resume(state, NOW)
+    now = NOW
+    while now - NOW < 90_000:
+        now += 900
+        for obj in list(state["objects"]):
+            if obj["spawned_at_ms"] <= now and focus.is_target_object(obj):
+                focus.tap(state, obj["id"], now, rng)
+        focus.advance(state, now, rng)
+        assert not state["finished"]
+    assert state["lives"] == 3
+    assert state["missed_targets"] == 0
+    assert state["wrong_taps"] == 0
+    assert state["score"] > 0 and state["hits"] > 0
+
+
+def test_hard_scores_with_the_same_rules_as_easy_and_medium():
+    for difficulty in ("easy", "medium", "hard"):
+        state, rng = _started(difficulty, seed=21)
+        cfg = focus.config_for(difficulty)
+        target = _target(state)
+        before = state["score"]
+        result = focus.tap(
+            state, target["id"], NOW + focus.WARMUP_MS + 500, rng
+        )
+        assert result["outcome"] == "hit"
+        assert result["points"] == cfg.hit_points + 1  # first hit, combo 1
+        assert state["score"] == before + result["points"]
+        assert state["lives"] == 3
+
+
+def test_catch_up_never_spawns_shapes_in_the_past():
+    """A slow poll must not add shapes that are already falling: they would be
+    visible for less than their fall time and could be charged as misses the
+    player never had a chance to prevent."""
+    state, rng = _started("medium")
+    state["objects"] = []
+    state["next_target_ms"] = NOW + 10**9
+    # A slot scheduled before a 4 s gap (below the stall reset threshold).
+    state["next_spawn_ms"] = NOW - 4_000
+    gap_end = NOW
+
+    focus.advance(state, gap_end, rng)
+
+    assert state["objects"], "spawning must resume after the gap"
+    for obj in state["objects"]:
+        assert obj["spawned_at_ms"] >= gap_end - 900, obj
+    progress_at_spawn = [
+        max(0.0, (gap_end - obj["spawned_at_ms"]) / obj["fall_ms"])
+        for obj in state["objects"]
+    ]
+    assert max(progress_at_spawn) < 0.5
+
+
+def test_objects_past_the_bottom_edge_are_not_rendered():
+    state, rng = _started("easy")
+    cfg = focus.config_for("easy")
+    t0 = NOW + focus.WARMUP_MS + 400
+    state["objects"] = []
+    state["next_spawn_ms"] = NOW + 10**9
+    obj = focus._spawn(state, cfg, t0, rng)
+    obj["fall_ms"] = 1_000
+
+    mid = focus.public_view(state, t0 + 500, session_id="sid")
+    assert [o["id"] for o in mid["objects"]] == [obj["id"]]
+
+    after = focus.public_view(
+        state, t0 + 1_000 + focus.TAP_GRACE_MS - 100, session_id="sid"
+    )
+    assert after["objects"] == []
 
 
 def test_three_missed_targets_end_the_run():

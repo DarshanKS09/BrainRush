@@ -23,6 +23,20 @@ export const OBJECT_SIZE_PX = 48;
 // is enough to keep the play area fed without hammering the API.
 export const FOCUS_POLL_MS = 900;
 
+/** Server-clock offset from one response, using the midpoint of the request
+ *  window. Using the receipt instant instead makes the client's clock lag the
+ *  server by the response time, so shapes are drawn lower than the server
+ *  thinks and vanish before the player sees them reach the bottom. */
+export function clockOffsetFromSample(
+  serverNowMs: number,
+  sentAtMs: number,
+  receivedAtMs: number,
+): number {
+  if (!Number.isFinite(serverNowMs) || serverNowMs <= 0) return 0;
+  if (!Number.isFinite(sentAtMs) || !Number.isFinite(receivedAtMs)) return 0;
+  return serverNowMs - Math.round((sentAtMs + receivedAtMs) / 2);
+}
+
 /** Fall progress 0..1 for one object at a server-clock instant. */
 export function fallProgress(
   spawnedAtMs: number,

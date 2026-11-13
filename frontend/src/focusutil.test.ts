@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   OBJECT_SIZE_PX,
   accuracyText,
+  clockOffsetFromSample,
   difficultySummary,
   fallProgress,
   instructionFor,
@@ -25,6 +26,21 @@ function obj(overrides: Partial<FocusObject> = {}): FocusObject {
     ...overrides,
   };
 }
+
+describe('clockOffsetFromSample', () => {
+  it('uses the midpoint of the request window, not the receipt time', () => {
+    // 300 ms round trip, server stamped halfway: midpoint is exact.
+    expect(clockOffsetFromSample(10_000, 1_000, 1_400)).toBe(9_300);
+    // Using the receipt instant would be 300 ms off; midpoint halves the bias.
+    expect(clockOffsetFromSample(10_000, 1_000, 1_400)).not.toBe(8_600);
+  });
+
+  it('ignores missing or nonsensical timestamps', () => {
+    expect(clockOffsetFromSample(0, 1_000, 1_400)).toBe(0);
+    expect(clockOffsetFromSample(10_000, 0, 0)).toBe(0);
+    expect(clockOffsetFromSample(Number.NaN, 1, 2)).toBe(0);
+  });
+});
 
 describe('fallProgress', () => {
   it('is linear between spawn and landing and clamps at both ends', () => {

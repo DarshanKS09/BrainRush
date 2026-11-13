@@ -534,6 +534,23 @@ async def test_direction_applies_move_on_stored_walls_array():
     assert session.flushes == 1
 
 
+async def test_retired_game_session_is_never_served():
+    """A leftover row for a removed game type is a 404, not a playable state."""
+    user = _user()
+    sid = uuid.uuid4()
+    state = WebappGameState(
+        user_id=user.id, session_id=sid, game_type="chess",
+        difficulty="medium", secret=0, max_attempts=1,
+        guesses={"game": "chess", "board": ["."]},
+    )
+    state.id = uuid.uuid4()
+    session = RecordingSession(script=[FakeResult(rows=[state])])
+    svc = MiniappGameService(session)
+
+    with pytest.raises(NotFoundError):
+        await svc.get_state(session_id=sid, user_id=user.id)
+
+
 async def test_missing_maze_state_on_unfinished_session_404s():
     """No state row + session not completed -> handled 404, unchanged."""
     user = _user()
@@ -544,111 +561,3 @@ async def test_missing_maze_state_on_unfinished_session_404s():
 
     with pytest.raises(NotFoundError):
         await svc.get_state(session_id=sid, user_id=user.id)
-
-
-
-
-
-async def test_chess_startup_returns_valid_state_with_position(monkeypatch):
-    # Regression test for Chess startup "Failed to fetch" issue.
-    # Verifies that Chess game start returns a valid ChessState with
-    # all required fields including the position object with FEN string.
-    # This prevents the "Failed to fetch" issue where missing position
-    # field could cause frontend deserialization errors.
-    import uuid
-    from brainrush.services.miniapp import _chess_public_view
-    from brainrush.game import chess as chess_game
-    from brainrush.db.models import WebappGameState
-
-    # Create a proper state object with session_id
-    user_id = uuid.uuid4()
-    session_id = uuid.uuid4()
-    state = WebappGameState(
-        user_id=user_id, session_id=session_id, game_type="chess",
-        difficulty="medium", secret=0, max_attempts=1, guesses=[]
-    )
-
-    initial_state = {
-        "game": "chess",
-        "difficulty": "medium",
-        "player_color": 0,
-        "board": chess_game._new_board(),
-        "turn": 0,
-        "ep": None,
-        "castling": list(chess_game._starting_castling()),
-        "move_history": [],
-        "halfmove_clock": 0,
-        "fullmove_number": 1,
-        "promotion_pending": None,
-        "game_over": False,
-        "result": None,
-    }
-
-    view = _chess_public_view(state, initial_state)
-
-    required_keys = ["session_id", "game_type", "difficulty", "playerColor", "board",
-                     "turn", "player_to_move", "move_history", "halfmove_clock",
-                     "fullmove_number", "promotion_pending", "game_over", "result",
-                     "status", "finished", "result_public", "position"]
-    for k in required_keys:
-        assert k in view, f"Missing {k} in view. Keys: {list(view.keys())}"
-
-    pos = view["position"]
-    pos_required = ["fen", "board", "turn", "halfMoves", "fullMoves", "castling", "enPassant"]
-    for k in pos_required:
-        assert k in pos, f"position missing {k}. Keys: {list(pos.keys())}"
-
-    print("Chess startup regression test PASSED: position field present")
-
-
-async def test_chess_move_legal_e2e4(monkeypatch):
-    """Regression: chess_move must not crash with AttributeError for _check_game_state_if.
-    Verify a successful legal move (e2-e4) works end-to-end through the service.
-    """
-    import uuid
-    from brainrush.game import chess as chess_game
-
-    user = _user()
-    sid = uuid.uuid4()
-
-    initial_state = {
-        "game": "chess",
-        "difficulty": "medium",
-        "player_color": 0,
-        "board": chess_game._new_board(),
-        "turn": 0,
-        "ep": None,
-        "castling": list(chess_game._starting_castling()),
-        "move_history": [],
-        "halfmove_clock": 0,
-        "fullmove_number": 1,
-        "promotion_pending": None,
-        "game_over": False,
-        "result": None,
-    }
-
-    state = WebappGameState(
-        user_id=user.id,
-        session_id=sid,
-        game_type="chess",
-        difficulty="medium",
-        secret=0,
-        max_attempts=1,
-        guesses=initial_state,
-    )
-    state.id = uuid.uuid4()
-
-    session = RecordingSession(script=[FakeResult(rows=[state])])
-    svc = MiniappGameService(session)
-
-    view = await svc.chess_move(
-        session_id=sid,
-        user_id=user.id,
-        frm=[6, 4],
-        to=[4, 4],
-        client_move_id="m1",
-    )
-
-    assert view["game_type"] == "chess"
-    assert view["finished"] is False
-    assert len(view["move_history"]) >= 1

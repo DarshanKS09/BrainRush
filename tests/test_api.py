@@ -244,6 +244,18 @@ def test_unplayable_game_rejected(monkeypatch):
     assert response.status_code == 400
 
 
+def test_chess_is_retired_and_cannot_be_started(monkeypatch):
+    client = _client(monkeypatch)
+    headers = {"X-Telegram-Init-Data": "x"}
+
+    catalog = client.get("/api/games", headers=headers).json()
+    assert "chess" not in {g["id"] for g in catalog["games"]}
+
+    response = client.post("/api/sessions", headers=headers,
+                           json={"game_type": "chess", "difficulty": "medium"})
+    assert response.status_code == 400
+
+
 def test_service_errors_map_to_status_codes(monkeypatch):
     from brainrush.db.errors import ConflictError, NotFoundError
 

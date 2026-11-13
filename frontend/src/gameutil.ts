@@ -100,19 +100,6 @@ export function reflexWaitText(d: { id: string; wait_min_ms?: number; wait_max_m
   return `Wait varies: ${secs(min)}–${secs(max)} s`;
 }
 
-/** Difficulty sub-description for Chess (AI opponent). */
-export function chessDifficultySub(d: { id: string }): string {
-  if (d.id === 'easy') return 'Beginner AI · occasional mistakes';
-  if (d.id === 'medium') return 'Intermediate AI · tactical awareness';
-  if (d.id === 'hard') return 'Advanced AI · deep search';
-  return d.id;
-}
-
-/** Whether chess is player vs AI. */
-export function isChessVsAI(gameType: string): boolean {
-  return gameType === 'chess';
-}
-
 /** Keypad buffer reducer: digits append (max 3 chars), back clears. */
 export function keypadReducer(buffer: string, key: string): string {
   if (key === 'back') return buffer.slice(0, -1);
@@ -125,16 +112,17 @@ export function keypadReducer(buffer: string, key: string): string {
   return String(n);
 }
 
-/** Short per-game title for resume rows and history. */
+/** Short per-game title for resume rows and history. Games that are no longer
+ * offered (retired titles still kept in history) get a neutral label so a
+ * removed game is never advertised again. */
 export function gameTitle(gameType: string): string {
   if (gameType === 'color_sequence') return 'Color Sequence';
   if (gameType === 'number_guessing') return 'Number Guessing';
   if (gameType === 'reflex_rush') return 'Reflex Rush';
   if (gameType === 'perfect_second') return 'Perfect Second';
   if (gameType === 'maze_race') return 'Maze Race';
-  if (gameType === 'chess') return 'Chess';
   if (gameType === 'focus_rush') return 'Focus Rush';
-  return gameType;
+  return 'Past game';
 }
 
 /** Right-hand resume hint; shape differs per game type. */
@@ -146,7 +134,6 @@ export function resumeHint(game: {
   rounds_total?: number;
   target_ms?: number;
   difficulty?: string;
-  playerColor?: string;
   lives?: number;
   score?: number;
 }): string {
@@ -157,7 +144,6 @@ export function resumeHint(game: {
     return `❤️ ${game.lives ?? 3} · ${game.score ?? 0} pts`;
   if (game.game_type === 'perfect_second')
     return game.target_ms !== undefined ? `🎯 ${formatSeconds(game.target_ms, game.difficulty ?? 'hard')}` : '🎯 ready';
-  if (game.game_type === 'chess') return game.playerColor ?? '';
   return `${game.attempts_left ?? '?'} left`;
 }
 

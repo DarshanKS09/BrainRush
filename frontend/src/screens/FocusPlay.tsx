@@ -16,6 +16,7 @@ import {
   OBJECT_SIZE_PX,
   SHAPE_FILL,
   difficultySummary,
+  clockOffsetFromSample,
   fallProgress,
   instructionFor,
   isTargetObject,
@@ -132,6 +133,8 @@ export default function FocusPlayScreen({
   const viewRef = useRef<FocusState | null>(null);
   const tappedRef = useRef(new Set<string>());
   const offsetRef = useRef(0);
+  // Tightest round trip seen: its midpoint gives the least-biased clock.
+  const bestRttRef = useRef(Number.POSITIVE_INFINITY);
   const pausedRef = useRef(true);
   const mountedRef = useRef(true);
   const seqRef = useRef(0);
@@ -158,8 +161,17 @@ export default function FocusPlayScreen({
     }, 1000);
   }, []);
 
-  const applyState = useCallback((next: FocusState) => {
-    if (next.now_ms > 0) offsetRef.current = next.now_ms - Date.now();
+  const applyState = useCallback(
+    (next: FocusState, sentAt = 0, receivedAt = 0) => {
+    // Latency-compensated server clock. Adopting only the fastest sample
+    // keeps the render within half of the best round trip of the server.
+    if (next.now_ms > 0 && sentAt > 0 && receivedAt >= sentAt) {
+      const rtt = receivedAt - sentAt;
+      if (rtt <= bestRttRef.current) {
+        bestRttRef.current = rtt;
+        offsetRef.current = clockOffsetFromSample(next.now_ms, sentAt, receivedAt);
+      }
+    }
     setView(next);
     setObjects((prev) => mergeFallingObjects(prev, next.objects ?? [], tappedRef.current));
     if (next.finished) setStarted(true);
@@ -192,16 +204,19 @@ export default function FocusPlayScreen({
       }
       setTargetChange(null);
     }
-  }, []);
+    },
+    [],
+  );
 
   /** Requests are sequenced so a slow poll can never overwrite a new tap. */
   const runRequest = useCallback(
     async (fn: () => Promise<FocusState>) => {
       const id = ++seqRef.current;
+      const sentAt = Date.now();
       const state = await fn();
       if (id < appliedRef.current) return null;
       appliedRef.current = id;
-      applyState(state);
+      applyState(state, sentAt, Date.now());
       return state;
     },
     [applyState],
@@ -209,10 +224,11 @@ export default function FocusPlayScreen({
 
   const load = useCallback(() => {
     setError('');
+    const sentAt = Date.now();
     api
       .focusState(ctx.initData, sessionId)
       .then((state) => {
-        applyState(state);
+        applyState(state, sentAt, Date.now());
         if (!state.paused || state.finished) setStarted(true);
       })
       .catch((e: Error) => setError(e.message));
