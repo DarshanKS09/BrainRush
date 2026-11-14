@@ -218,7 +218,7 @@ function track(source: AudioScheduledSourceNode): void {
 }
 
 /** Render one recipe into a buffer. Never throws. */
-async function renderSound(name: SoundName, spec: SoundSpec): Promise<AudioBuffer | null> {
+async function renderSound(spec: SoundSpec): Promise<AudioBuffer | null> {
   const OAC = offlineCtor();
   const live = ensureContext();
   if (!OAC || !live) return null;
@@ -244,7 +244,7 @@ export function preloadAudio(): Promise<void> {
       await Promise.all(
         names.slice(i, i + 4).map(async (name) => {
           if (buffers.has(name)) return;
-          const buffer = await renderSound(name, SOUNDS[name]);
+          const buffer = await renderSound(SOUNDS[name]);
           if (buffer) buffers.set(name, buffer);
         }),
       );
